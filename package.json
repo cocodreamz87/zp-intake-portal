@@ -1,0 +1,21 @@
+{
+  "name": "zp-intake-portal",
+  "private": true,
+  "description": "ZinkPress gated client intake portal: No Credentials, No Clock.",
+  "workspaces": [
+    "packages/shared",
+    "apps/worker",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:worker": "npm run dev --workspace apps/worker",
+    "dev:web": "npm run dev --workspace apps/web",
+    "test": "npm run test --workspace apps/worker",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspace apps/web",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

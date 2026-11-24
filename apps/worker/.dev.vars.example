@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `npm run dev:worker`. Never commit .dev.vars.
+STRIPE_WEBHOOK_SECRET=whsec_local_test_only
+SECRETS_ENCRYPTION_KEY=REPLACE_WITH_openssl_rand_-base64_32
+ADMIN_API_TOKEN=REPLACE_WITH_openssl_rand_-hex_32
+PORTAL_URL=http://localhost:5173
+ALLOWED_ORIGIN=http://localhost:5173

@@ -1,0 +1,48 @@
+# ZinkPress intake portal API (Cloudflare Worker)
+# Replace every REPLACE_ME value. The README walks through each one.
+
+name = "zp-intake-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Housekeeping every hour: wipe client API keys after their purge date,
+# expire old links, retry Jira/receipt emails that failed.
+[triggers]
+crons = ["17 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zp-intake"
+database_id = "REPLACE_ME_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ASSETS_BUCKET"
+bucket_name = "zp-intake-assets"
+
+[vars]
+AGENCY_NAME = "ZinkPress"
+AGENCY_EMAIL = "ZinkPress@proton.me"           # the email clients invite as admin (registrar, Cloudflare)
+PORTAL_URL = "https://REPLACE_ME.pages.dev"     # where the intake wizard lives (Cloudflare Pages)
+ALLOWED_ORIGIN = "https://REPLACE_ME.pages.dev" # same as PORTAL_URL; comma-separate if more than one
+BUSINESS_TIMEZONE = "America/New_York"          # Eastern time; follows daylight saving on its own
+HOLIDAYS = "2026-11-26,2026-12-25,2027-01-01,2027-05-31,2027-07-05,2027-09-06,2027-11-25,2027-12-24"  # example: US holidays that land on weekdays. Edit to your own days off.
+TOKEN_TTL_DAYS = "14"                            # how long a client's intake link works
+SECRETS_PURGE_DAYS = "7"                         # wipe client API keys this many days after launch
+RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender; leave empty to use AGENCY_EMAIL
+STAGING_URL_TEMPLATE = ""                        # e.g. "https://{project}.pages.dev" (optional)
+CLOUDFLARE_HELP_URL = "https://developers.cloudflare.com/fundamentals/manage-members/manage/"
+JIRA_DOMAIN = ""                                 # e.g. "zinkpress.atlassian.net" (leave empty to skip Jira)
+JIRA_PROJECT_KEY = ""                            # e.g. "ZP"
+JIRA_EPIC_TYPE = "Epic"
+JIRA_TASK_TYPE = "Task"
+
+# Secrets: set with `npx wrangler secret put NAME`, never in this file.
+#   STRIPE_WEBHOOK_SECRET   whsec_... from your Stripe webhook
+#   SECRETS_ENCRYPTION_KEY  run: openssl rand -base64 32
+#   ADMIN_API_TOKEN         run: openssl rand -hex 32
+#   RESEND_API_KEY          re_... (optional until you want emails)
+#   JIRA_EMAIL              your Atlassian login email (optional)
+#   JIRA_API_TOKEN          from id.atlassian.com (optional)
+#   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)
