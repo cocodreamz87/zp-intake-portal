@@ -1,10 +1,18 @@
-# ZinkPress intake portal API (Cloudflare Worker)
-# Replace every REPLACE_ME value. The README walks through each one.
+# ZinkPress intake portal: one Cloudflare Worker that serves the intake form
+# (built into apps/web/dist) and the API under /api/*.
+# Cloudflare's dashboard builds and deploys this on every push to main (see README).
 
-name = "zp-intake-api"
-main = "src/index.ts"
+name = "zp-intake-portal"
+main = "apps/worker/src/index.ts"
 compatibility_date = "2026-11-01"
 compatibility_flags = ["nodejs_compat"]
+
+# The intake form. `npm run build` puts it here before each deploy.
+# /api/* goes to the Worker code; every other address serves the form.
+[assets]
+directory = "apps/web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
 
 # Housekeeping every hour: wipe client API keys after their purge date,
 # expire old links, retry Jira/receipt emails that failed.
@@ -16,7 +24,7 @@ crons = ["17 * * * *"]
 binding = "DB"
 database_name = "zp-intake"
 database_id = "dbe569b8-56f6-48db-9e8b-c0e50551e4c3"
-migrations_dir = "migrations"
+migrations_dir = "apps/worker/migrations"
 
 [[r2_buckets]]
 binding = "ASSETS_BUCKET"
@@ -24,10 +32,9 @@ bucket_name = "zp-intake-assets"
 
 [vars]
 AGENCY_NAME = "ZinkPress"
-AGENCY_EMAIL = "ZinkPress@proton.me"           # the email clients invite as admin (registrar, Cloudflare)
-PORTAL_URL = "https://REPLACE_ME.pages.dev"     # where the intake wizard lives (Cloudflare Pages)
-ALLOWED_ORIGIN = "https://REPLACE_ME.pages.dev" # same as PORTAL_URL; comma-separate if more than one
-BUSINESS_TIMEZONE = "America/New_York"          # Eastern time; follows daylight saving on its own
+AGENCY_EMAIL = "ZinkPress@proton.me"            # the email clients invite as admin (registrar, Cloudflare)
+PORTAL_URL = ""                                  # leave empty: links use this Worker's own address. Set it once you add a custom domain.
+BUSINESS_TIMEZONE = "America/New_York"           # Eastern time; follows daylight saving on its own
 HOLIDAYS = "2026-11-26,2026-12-25,2027-01-01,2027-05-31,2027-07-05,2027-09-06,2027-11-25,2027-12-24"  # example: US holidays that land on weekdays. Edit to your own days off.
 TOKEN_TTL_DAYS = "14"                            # how long a client's intake link works
 SECRETS_PURGE_DAYS = "7"                         # wipe client API keys this many days after launch
@@ -39,11 +46,12 @@ JIRA_PROJECT_KEY = ""                            # e.g. "ZP"
 JIRA_EPIC_TYPE = "Epic"
 JIRA_TASK_TYPE = "Task"
 
-# Secrets: set with `npx wrangler secret put NAME`, never in this file.
+# Secrets: add these in the Cloudflare dashboard (Settings > Variables and Secrets,
+# type "Secret"), never in this file. This repo is public.
+#   SECRETS_ENCRYPTION_KEY  any random password, 32+ characters. Never change or lose it.
+#   ADMIN_API_TOKEN         any random password, 32+ characters
 #   STRIPE_WEBHOOK_SECRET   whsec_... from your Stripe webhook
-#   SECRETS_ENCRYPTION_KEY  run: openssl rand -base64 32
-#   ADMIN_API_TOKEN         run: openssl rand -hex 32
-#   RESEND_API_KEY          re_... (optional until you want emails)
+#   RESEND_API_KEY          re_... (optional, needs your own domain)
 #   JIRA_EMAIL              your Atlassian login email (optional)
 #   JIRA_API_TOKEN          from id.atlassian.com (optional)
 #   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)

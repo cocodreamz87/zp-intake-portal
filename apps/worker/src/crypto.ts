@@ -59,12 +59,27 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
   return toHex(await crypto.subtle.sign("HMAC", key, enc.encode(message)));
 }
 
-async function importAesKey(base64Key: string): Promise<CryptoKey> {
-  const raw = fromBase64(base64Key.trim());
-  if (raw.length !== 32) {
-    throw new Error("SECRETS_ENCRYPTION_KEY must be 32 bytes, base64-encoded (run: openssl rand -base64 32)");
+/**
+ * SECRETS_ENCRYPTION_KEY can be either:
+ *  - exactly 32 bytes written as base64 (what `openssl rand -base64 32` prints), used as-is, or
+ *  - any random password of 32+ characters (easy to make in a password manager),
+ *    turned into a 32-byte key with SHA-256.
+ * Either way, changing it later makes keys already stored unreadable.
+ */
+export async function aesKeyBytes(secret: string): Promise<Uint8Array> {
+  const s = secret.trim();
+  if (/^[A-Za-z0-9+/]{43}=$/.test(s)) {
+    const raw = fromBase64(s);
+    if (raw.length === 32) return raw;
   }
-  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  if (s.length < 32) {
+    throw new Error("SECRETS_ENCRYPTION_KEY must be a random password of at least 32 characters");
+  }
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(s)));
+}
+
+async function importAesKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", await aesKeyBytes(secret), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
 export interface EncryptedBlob {

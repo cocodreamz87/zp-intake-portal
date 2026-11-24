@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // In local dev, /api calls go to `wrangler dev` on port 8787.
-// In production, set VITE_API_BASE to your Worker's URL (see README).
+// In production the form and API share one Worker, so no API address is needed.
 export default defineConfig({
   plugins: [react()],
   server: {

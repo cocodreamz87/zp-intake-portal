@@ -310,8 +310,14 @@ app.post("/api/onboarding/submit", requireSession, async (c) => {
 
 /* ------------------------------ Stripe ------------------------------ */
 
+/** The intake form's address: PORTAL_URL if set, otherwise this Worker's own address. */
+function portalBase(env: Env, requestUrl: string): string {
+  return (env.PORTAL_URL?.trim() || new URL(requestUrl).origin).replace(/\/$/, "");
+}
+
 async function startIntake(
   env: Env,
+  baseUrl: string,
   s: { projectId: string; clientName: string; clientEmail: string; tier: Tier; requiredIntegrations: string[]; invoiceId?: string | null },
 ) {
   const ttl = numberVar(env.TOKEN_TTL_DAYS, 14);
@@ -343,7 +349,7 @@ async function startIntake(
     await audit(env.DB, row, "session.created", { tier: s.tier, invoiceId: s.invoiceId ?? null });
   }
 
-  const link = `${env.PORTAL_URL.replace(/\/$/, "")}/?token=${token}`;
+  const link = `${baseUrl}/?token=${token}`;
   let emailed = false;
   if (resendConfigured(env)) {
     const mail = intakeLinkEmail(env, { clientName: s.clientName, projectId: s.projectId, link, expiresAt });
@@ -386,7 +392,7 @@ app.post("/api/stripe/webhook", async (c) => {
   }
 
   // If this throws (for example the email fails), we answer 500 and Stripe retries later.
-  const result = await startIntake(env, {
+  const result = await startIntake(env, portalBase(env, c.req.url), {
     projectId: info.projectId,
     clientName: info.clientName,
     clientEmail: info.clientEmail,
@@ -442,7 +448,7 @@ app.post("/api/admin/sessions", requireAdmin, async (c) => {
   if (!TIERS.includes(tier)) return c.json({ error: "tier must be TIER_1, TIER_2 or TIER_3" }, 400);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clientEmail)) return c.json({ error: "clientEmail is not an email" }, 400);
   if (await findSessionByProject(c.env.DB, projectId)) return c.json({ error: "That project already has an intake." }, 409);
-  const result = await startIntake(c.env, {
+  const result = await startIntake(c.env, portalBase(c.env, c.req.url), {
     projectId,
     clientName,
     clientEmail,
@@ -472,7 +478,7 @@ app.post("/api/admin/sessions/:projectId/reissue", requireAdmin, async (c) => {
     return c.json({ error: "Already submitted; no new link needed." }, 409);
   }
   const { token, expiresAt } = await reissueToken(c.env.DB, row, numberVar(c.env.TOKEN_TTL_DAYS, 14));
-  const link = `${c.env.PORTAL_URL.replace(/\/$/, "")}/?token=${token}`;
+  const link = `${portalBase(c.env, c.req.url)}/?token=${token}`;
   let emailed = false;
   if (resendConfigured(c.env)) {
     const mail = intakeLinkEmail(c.env, { clientName: row.client_name, projectId: row.project_id, link, expiresAt });

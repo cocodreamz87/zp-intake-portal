@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decryptJson, encryptJson, generateToken, hmacSha256Hex, sha256Hex, timingSafeEqual, toBase64, TOKEN_RE } from "../src/crypto";
+import { aesKeyBytes, decryptJson, encryptJson, generateToken, hmacSha256Hex, sha256Hex, timingSafeEqual, toBase64, TOKEN_RE } from "../src/crypto";
 import { checkUpload, readPngInfo } from "../src/files";
 import { verifyStripeSignature } from "../src/stripe";
 import { checkGithubAccount } from "../src/github";
@@ -40,8 +40,19 @@ describe("AES-GCM secrets", () => {
     const blob = await encryptJson({ a: 1 }, KEY, "ZP-1");
     await expect(decryptJson(blob, KEY, "ZP-2")).rejects.toThrow();
   });
-  it("refuses a key that isn't 32 bytes", async () => {
-    await expect(encryptJson({}, toBase64(new Uint8Array(16)), "x")).rejects.toThrow(/32 bytes/);
+  it("refuses a key that's too short", async () => {
+    await expect(encryptJson({}, "short-password", "x")).rejects.toThrow(/32 characters/);
+    await expect(encryptJson({}, toBase64(new Uint8Array(16)), "x")).rejects.toThrow(/32 characters/);
+  });
+  it("accepts a long password from a password manager as the key", async () => {
+    const pass = "Correct-Horse-Battery-Staple-2026-zinkpress!";
+    expect(await aesKeyBytes(pass)).toHaveLength(32);
+    const blob = await encryptJson({ A: "b" }, pass, "ZP-1");
+    expect(await decryptJson(blob, pass, "ZP-1")).toEqual({ A: "b" });
+    await expect(decryptJson(blob, pass + "x", "ZP-1")).rejects.toThrow();
+  });
+  it("uses an openssl base64 key as-is", async () => {
+    expect(Array.from(await aesKeyBytes(KEY))).toEqual(Array.from({ length: 32 }, (_, i) => i + 1));
   });
 });
 

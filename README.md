@@ -3,25 +3,29 @@
 **No Credentials, No Clock.** A client pays a Stripe invoice, gets a private link, and fills in a 4-step form. The delivery clock starts only when every answer checks out. Then the portal opens a Jira epic with tasks and emails the client a kickoff receipt. No kickoff call needed.
 
 ```
-Stripe invoice.paid ──► Worker API ──► D1 (session, status, audit log)
-                           │  ▲
-     email with link ◄─────┘  │  R2 (logos and brand files)
-                              │
-Client ──► Intake wizard (Cloudflare Pages) ──► submit ──► clock starts
-                                                    ├──► Jira epic + tasks
-                                                    └──► kickoff receipt email
+Stripe invoice.paid ──► zp-intake-portal Worker ──► D1 (session, status, audit log)
+                           │        ▲
+     email with link ◄─────┘        │  R2 (logos and brand files)
+                                    │
+Client ──► intake form (same Worker) ──► submit ──► clock starts
+                                              ├──► Jira epic + tasks
+                                              └──► kickoff receipt email
 ```
+
+One Cloudflare Worker does everything: `/api/...` addresses run the API, and every other address shows the intake form.
 
 | Folder | What it is |
 |---|---|
-| `apps/web` | The 4-step wizard (React + Vite + TypeScript). Deploys to Cloudflare Pages. |
-| `apps/worker` | The API (Hono on Cloudflare Workers) with D1, R2, Web Crypto, cron. |
+| `wrangler.toml` | The Worker's settings (database, storage, schedule, your agency details). |
+| `apps/web` | The 4-step intake form (React + Vite + TypeScript). |
+| `apps/worker` | The API (Hono) with D1, R2, Web Crypto, and the hourly cron job. |
 | `apps/worker/migrations` | The D1 database schema. |
-| `packages/shared` | The Zod form rules, used by both the wizard and the API so they always agree. |
+| `packages/shared` | The Zod form rules, used by both the form and the API so they always agree. |
+| `scripts/reveal-secrets.mjs` | Shows one client's API keys on your own computer. |
 
 ## How the clock works
 
-- **Time zone:** Eastern (`America/New_York`). It follows daylight saving on its own, so it's EST in winter and EDT in summer. To change it, edit `BUSINESS_TIMEZONE` in `apps/worker/wrangler.toml`. That one setting drives everything.
+- **Time zone:** Eastern (`America/New_York`). It follows daylight saving on its own, so it's EST in winter and EDT in summer. To change it, edit `BUSINESS_TIMEZONE` in `wrangler.toml` (in the repo's top folder). That one setting drives everything.
 - **Kickoff:** the next 9:00 AM Eastern on a business day, at or after the moment the client submits. Submit Tuesday 7:30 AM, kickoff is Tuesday 9:00 AM. Submit Tuesday 9:05 AM or Friday night, kickoff is the next business morning.
 - **Business days:** Monday to Friday, minus the dates in `HOLIDAYS` (edit that list to your own days off).
 - **Deadlines:** Tier 1 = 2 business days (the "48 hours"), Tier 2 = 5 business days, Tier 3 = 10 business days, each landing at 9:00 AM Eastern.
@@ -39,7 +43,8 @@ Client ──► Intake wizard (Cloudflare Pages) ──► submit ──► clo
 9. **Jira could double the epic on a retry.** Every issue gets a project label. A retry finds the existing epic (saved in D1 or found by label) and creates only the missing tasks. Failed Jira or email work is retried by the hourly cron job.
 10. **GitHub check was only a length check.** It now uses GitHub's real name rules, then asks GitHub's API whether the account exists. If GitHub is down, the client can still submit and the row is marked unverified for you.
 11. **Secrets purge wasn't built.** When you mark a project launched, the encrypted keys are wiped 7 days later (`SECRETS_PURGE_DAYS`) by the cron job.
-12. **Smaller fixes:** encryption is bound to the project id (a blob copied to another row won't decrypt); two quick submits can't start two clocks; secrets never go into Jira, emails, or the audit log (key names only); the copy step rejects placeholder text like "Lorem ipsum" or "TBD"; `STRIPE_SECRET_KEY` isn't needed (the portal only receives webhooks); Jira's due date uses the Eastern date, not the UTC date.
+12. **One Worker instead of Pages + Worker.** The form and the API ship together as one Cloudflare Worker, so Cloudflare can build and deploy it from GitHub on every push, there's no cross-site setup, and client links use the Worker's own address automatically.
+13. **Smaller fixes:** encryption is bound to the project id (a blob copied to another row won't decrypt); two quick submits can't start two clocks; secrets never go into Jira, emails, or the audit log (key names only); the copy step rejects placeholder text like "Lorem ipsum" or "TBD"; `STRIPE_SECRET_KEY` isn't needed (the portal only receives webhooks); Jira's due date uses the Eastern date, not the UTC date.
 
 ## Run it on your computer
 
@@ -47,16 +52,15 @@ You need Node.js 22.13 or newer.
 
 ```bash
 npm install
-npm run check            # type-check, run all tests, build the wizard
+npm run check            # type-check, run all tests, build the form
 ```
 
 To click through it locally:
 
 ```bash
-cp apps/worker/.dev.vars.example apps/worker/.dev.vars   # then fill in the two REPLACE_WITH values
-npm run db:migrate:local --workspace apps/worker
-npm run dev:worker       # API on http://localhost:8787
-npm run dev:web          # wizard on http://localhost:5173 (in a second terminal)
+cp .dev.vars.example .dev.vars      # then put two long random passwords in it
+npm run db:migrate:local
+npm run dev                         # form and API on http://localhost:8787
 ```
 
 Make a test intake link (use the ADMIN_API_TOKEN from your `.dev.vars`):
@@ -67,68 +71,68 @@ curl -X POST http://localhost:8787/api/admin/sessions \
   -d '{"projectId":"ZP-TEST-1","tier":"TIER_1","clientEmail":"you@example.com","clientName":"Test Client"}'
 ```
 
-Open the `link` it prints.
+Open the `link` it prints. To work on the form with instant reloads, run `npm run dev:web` in a second terminal and use http://localhost:5173 instead.
 
 ## Deploy checklist (step by step)
 
-Do these in order. Each step says what to type or click. Anything in `CAPS_LIKE_THIS` is a name you type exactly.
+Everything here happens in your web browser. No terminal needed.
 
-### 1. Get the tools ready
-1. Install Node.js 22 or newer from nodejs.org.
-2. Open a terminal in this folder and run `npm install`.
-3. Run `npx wrangler login`. A browser window opens. Sign in to Cloudflare and click **Allow**.
+### 1. Database and file storage (already done)
+The `zp-intake` database and the `zp-intake-assets` file storage already exist in your Cloudflare account, with all tables loaded, and the database ID is already in `wrangler.toml`. Nothing to do.
 
-### 2. Database and file storage (already done)
-The `zp-intake` database and the `zp-intake-assets` file storage are already set up in your Cloudflare account, with all tables loaded, and the database ID is already in `apps/worker/wrangler.toml`. Go on to step 3.
+### 2. Make two passwords
+Open your password manager (Proton Pass works) and generate two random passwords, each **at least 32 characters**. Save them as:
+- **ZinkPress portal encryption key.** This locks clients' API keys. **Never change it or lose it.** If it changes, keys clients already sent can't be read.
+- **ZinkPress portal admin token.** This is how you create links by hand.
 
-If you ever need to rebuild them from scratch: `npx wrangler d1 create zp-intake`, paste the new `database_id` into `apps/worker/wrangler.toml`, run `npm run db:migrate:remote --workspace apps/worker`, then `npx wrangler r2 bucket create zp-intake-assets`. Keep the bucket private.
+### 3. Connect the repo to Cloudflare
+1. In the Cloudflare dashboard, open **Workers & Pages** and click **Create**.
+2. Choose **Import a repository** (on the Workers tab). If asked, connect your GitHub account and allow Cloudflare to see `zp-intake-portal`.
+3. Pick the `zp-intake-portal` repository.
+4. Fill in the settings:
+   - **Project name:** `zp-intake-portal` (it must match exactly)
+   - **Build command:** `npm run build`
+   - **Deploy command:** `npx wrangler deploy`
+   - **Root directory:** leave it as `/`
+   - Under **Build variables**, add `NODE_VERSION` = `22`
+5. Click **Create and deploy**. Wait for the green check. It takes about a minute.
+6. Your portal's address shows on the Worker's page, like `https://zp-intake-portal.YOURNAME.workers.dev`. Copy it.
 
-### 3. Put the API online
-1. Run `cd apps/worker`.
-2. Make your secret keys. For each line, run the command, then paste the value when it asks:
-   - `openssl rand -base64 32` → copy the result → `npx wrangler secret put SECRETS_ENCRYPTION_KEY` → paste.
-   - `openssl rand -hex 32` → copy the result → `npx wrangler secret put ADMIN_API_TOKEN` → paste. **Save this one in your password manager.** It's how you create links by hand.
-   - On Windows, run these in Git Bash (it comes with Git and includes `openssl`).
-3. Run `npx wrangler deploy`. It prints your API address, like `https://zp-intake-api.YOURNAME.workers.dev`. Copy it.
-4. **Never lose `SECRETS_ENCRYPTION_KEY`.** If it changes, keys clients already sent can't be read.
+From now on, every push to the `main` branch on GitHub redeploys the portal on its own.
 
-### 4. Put the wizard online (Cloudflare Pages)
-1. In the Cloudflare dashboard, go to **Workers & Pages → Create → Pages → Connect to Git**.
-2. Pick the `zp-intake-portal` repository.
-3. Settings:
-   - Build command: `npm run build`
-   - Build output folder: `apps/web/dist`
-   - Environment variables: `VITE_API_BASE` = your API address from step 3.3 (no slash at the end), and `NODE_VERSION` = `22`
-4. Click **Save and Deploy**. It gives you a Pages address, like `https://zp-intake.pages.dev`.
-5. Back in `apps/worker/wrangler.toml`, put that Pages address in both `PORTAL_URL` and `ALLOWED_ORIGIN`.
-6. Run `npx wrangler deploy` again (from `apps/worker`) so the API knows where the wizard lives.
+### 4. Add the two passwords
+1. In the dashboard, open the `zp-intake-portal` Worker, then **Settings → Variables and Secrets**.
+2. Click **Add**. Type: **Secret**. Name: `SECRETS_ENCRYPTION_KEY`. Value: your encryption key from step 2. Save.
+3. Click **Add** again. Type: **Secret**. Name: `ADMIN_API_TOKEN`. Value: your admin token. Save.
+4. Click **Deploy** if Cloudflare asks.
+5. Check it: open your portal address with `/api/health` on the end. You should see `{"ok":true}`.
 
 ### 5. Connect Stripe
 1. In Stripe, go to **Developers → Webhooks → Add endpoint**.
-2. Endpoint URL: your API address + `/api/stripe/webhook`.
+2. Endpoint URL: your portal address + `/api/stripe/webhook`.
 3. Event to send: `invoice.paid` only.
 4. Save, then click **Reveal** under Signing secret and copy it (starts with `whsec_`).
-5. From the `apps/worker` folder, run `npx wrangler secret put STRIPE_WEBHOOK_SECRET` and paste it.
+5. Back in Cloudflare, add one more Secret named `STRIPE_WEBHOOK_SECRET` with that value (same way as step 4).
 6. On every client invoice, add **Metadata** (on the invoice, not the customer):
    - `project_id` → your SOW number, like `ZP-2026-014`
    - `tier` → `TIER_1`, `TIER_2`, or `TIER_3`
    - `integrations` → (Tier 2/3 only) the key names they owe you, comma-separated, like `STRIPE_SECRET_KEY,RESEND_API_KEY`
    - `client_name` → optional; otherwise the customer name is used
-7. Test it: in Stripe **test mode**, send yourself an invoice with the metadata above and pay it with the test card `4242 4242 4242 4242`. Then check the project with the admin command below. (`stripe trigger invoice.paid` from the Stripe CLI also proves the signature works, but its sample invoice doesn't carry your metadata, so the portal logs it and ignores it.)
+7. Test it: in Stripe **test mode**, send yourself an invoice with the metadata above and pay it with the test card `[REDACTED-PAN]`. Then check the project with the admin command below.
 
-### 6. Emails (Resend) — needs a domain
+### 6. Emails (Resend), once you have a domain
 Resend only sends from a domain you own and verify. A Proton address can't be the sender.
 - **Until you have a domain:** skip this. Make links with the admin command below and send them from your Proton email yourself.
-- **Once you have a domain:** verify it in Resend, create an API key, run `npx wrangler secret put RESEND_API_KEY`, set `RECEIPT_FROM_EMAIL` in `wrangler.toml` to something like `intake@yourdomain.com`, and deploy again. `AGENCY_EMAIL` stays as the reply-to.
+- **Once you have a domain:** verify it in Resend, create an API key, and add it in Cloudflare as a Secret named `RESEND_API_KEY`. In `wrangler.toml`, set `RECEIPT_FROM_EMAIL` to something like `intake@yourdomain.com` and push. `AGENCY_EMAIL` stays as the reply-to.
 
 ### 7. Jira (optional)
 1. Create an API token at id.atlassian.com → Security → API tokens.
-2. In `wrangler.toml`, set `JIRA_DOMAIN` (like `zinkpress.atlassian.net`) and `JIRA_PROJECT_KEY` (like `ZP`).
-3. Run `npx wrangler secret put JIRA_EMAIL` (your Atlassian login) and `npx wrangler secret put JIRA_API_TOKEN`.
-4. Deploy again. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
+2. In `wrangler.toml`, set `JIRA_DOMAIN` (like `zinkpress.atlassian.net`) and `JIRA_PROJECT_KEY` (like `ZP`), then push.
+3. In Cloudflare, add Secrets `JIRA_EMAIL` (your Atlassian login) and `JIRA_API_TOKEN`.
+4. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
 
 ### 8. Slack alerts (optional)
-The Worker can post to four channels in your ZinkPress Slack. Each alert is skipped until its webhook URL is set, and a Slack problem never breaks a Stripe webhook or a client's submit.
+The Worker can post to four channels in your ZinkPress Slack. Each alert is skipped until its webhook address is added, and a Slack problem never breaks a Stripe webhook or a client's submit.
 
 | Channel | Secret | What posts there |
 |---|---|---|
@@ -140,40 +144,36 @@ The Worker can post to four channels in your ZinkPress Slack. Each alert is skip
 Slack messages never include a client's intake link or their API keys.
 
 Set it up:
-1. Go to https://api.slack.com/apps, click **Create New App** → **From scratch**, name it "ZinkPress Alerts", pick the ZinkPress workspace.
-2. Open **Incoming Webhooks**, turn it on, click **Add New Webhook to Workspace**, pick `#pipeline-revenue`, and click **Allow**. Copy the URL.
-3. Repeat step 2 for `#sprint-ops`, `#staging-approvals` and `#worker-errors`. Each channel gets its own URL.
-4. From `apps/worker`, run each of these and paste the matching URL when it asks:
-   - `npx wrangler secret put SLACK_WEBHOOK_REVENUE`
-   - `npx wrangler secret put SLACK_WEBHOOK_SPRINT_OPS`
-   - `npx wrangler secret put SLACK_WEBHOOK_APPROVALS`
-   - `npx wrangler secret put SLACK_WEBHOOK_ERRORS`
-5. Treat these URLs like passwords: anyone who has one can post to that channel.
+1. Go to https://api.slack.com/apps, click **Create New App** → **From scratch**, name it "ZinkPress Alerts", and pick the ZinkPress workspace.
+2. Open **Incoming Webhooks**, turn it on, click **Add New Webhook to Workspace**, pick `#pipeline-revenue`, and click **Allow**. Copy the address it shows (starts with `https://hooks.slack.com/`).
+3. Repeat step 2 for `#sprint-ops`, `#staging-approvals` and `#worker-errors`. Each channel gets its own address.
+4. In Cloudflare, add four Secrets (same way as step 4), each holding the matching address: `SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRINT_OPS`, `SLACK_WEBHOOK_APPROVALS`, `SLACK_WEBHOOK_ERRORS`.
+5. Treat these addresses like passwords: anyone who has one can post to that channel.
 
 ### 9. Optional extras
-- `npx wrangler secret put GITHUB_TOKEN` with a fine-grained GitHub token that has no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
-- A nicer address like `intake.yourdomain.com`: in Pages → Custom domains. Then update `PORTAL_URL` and `ALLOWED_ORIGIN` and deploy again.
+- A Secret named `GITHUB_TOKEN` holding a fine-grained GitHub token with no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
+- A nicer address like `intake.yourdomain.com`: on the Worker's page, **Settings → Domains & Routes → Add → Custom domain**. Then set `PORTAL_URL` in `wrangler.toml` to that address and push, so emailed links use it.
 
-Every `npx wrangler ...` command in steps 5 to 8 runs from the `apps/worker` folder.
+**This repo is public.** Put passwords and keys only in Cloudflare's Secrets, never in `wrangler.toml` or any file in the repo.
 
 ## Your admin commands
 
-Replace `API` with your API address and `TOKEN` with your `ADMIN_API_TOKEN`.
+Replace `PORTAL` with your portal address and `TOKEN` with your admin token. These run in a terminal (on Windows, use PowerShell and type `curl.exe` instead of `curl`). Clients who pay through Stripe don't need any of this; their link is created for them.
 
 | What | Command |
 |---|---|
-| Start an intake without Stripe (cash, Zelle, testing) | `curl -X POST API/api/admin/sessions -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" -d '{"projectId":"ZP-1","tier":"TIER_1","clientEmail":"c@x.com","clientName":"Name"}'` |
-| See a project (no secrets shown) | `curl API/api/admin/sessions/ZP-1 -H "Authorization: Bearer TOKEN"` |
-| New link (lost or expired) | `curl -X POST API/api/admin/sessions/ZP-1/reissue -H "Authorization: Bearer TOKEN"` |
-| Mark launched (starts the 7-day key purge) | `curl -X POST API/api/admin/sessions/ZP-1/launched -H "Authorization: Bearer TOKEN"` |
-| Run housekeeping now | `curl -X POST API/api/admin/run-cron -H "Authorization: Bearer TOKEN"` |
+| Start an intake without Stripe (cash, Zelle, testing) | `curl -X POST PORTAL/api/admin/sessions -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" -d '{"projectId":"ZP-1","tier":"TIER_1","clientEmail":"c@x.com","clientName":"Name"}'` |
+| See a project (no secrets shown) | `curl PORTAL/api/admin/sessions/ZP-1 -H "Authorization: Bearer TOKEN"` |
+| New link (lost or expired) | `curl -X POST PORTAL/api/admin/sessions/ZP-1/reissue -H "Authorization: Bearer TOKEN"` |
+| Mark launched (starts the 7-day key purge) | `curl -X POST PORTAL/api/admin/sessions/ZP-1/launched -H "Authorization: Bearer TOKEN"` |
+| Run housekeeping now | `curl -X POST PORTAL/api/admin/run-cron -H "Authorization: Bearer TOKEN"` |
 
-Reading a client's API keys is deliberately not an API route, so a leaked admin token can't pull them out. When you need them, run this on your own computer from `apps/worker`:
+Reading a client's API keys is deliberately not an API route, so a leaked admin token can't pull them out. When you need them, run this on your own computer from the repo's top folder (it asks you to sign in to Cloudflare the first time):
 
 ```bash
-SECRETS_ENCRYPTION_KEY="your key" node scripts/reveal-secrets.mjs ZP-2026-014
+SECRETS_ENCRYPTION_KEY="your encryption key" node scripts/reveal-secrets.mjs ZP-2026-014
 ```
 
 ## Tests
 
-`npm test` runs 57 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.
+`npm test` runs 59 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.
