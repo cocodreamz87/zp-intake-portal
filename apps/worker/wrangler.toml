@@ -14,7 +14,7 @@ crons = ["17 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "zp-intake"
-database_id = "REPLACE_ME_D1_DATABASE_ID"
+database_id = "dbe569b8-56f6-48db-9e8b-c0e50551e4c3"
 migrations_dir = "migrations"
 
 [[r2_buckets]]

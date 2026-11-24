@@ -78,17 +78,12 @@ Do these in order. Each step says what to type or click. Anything in `CAPS_LIKE_
 2. Open a terminal in this folder and run `npm install`.
 3. Run `npx wrangler login`. A browser window opens. Sign in to Cloudflare and click **Allow**.
 
-### 2. Make the database
-1. Run `npx wrangler d1 create zp-intake`.
-2. It prints a `database_id`. Copy it.
-3. Open `apps/worker/wrangler.toml` and paste it in place of `REPLACE_ME_D1_DATABASE_ID`.
-4. Run `npm run db:migrate:remote --workspace apps/worker`. Type `y` if it asks.
+### 2. Database and file storage (already done)
+The `zp-intake` database and the `zp-intake-assets` file storage are already set up in your Cloudflare account, with all tables loaded, and the database ID is already in `apps/worker/wrangler.toml`. Go on to step 3.
 
-### 3. Make the file storage
-1. Run `npx wrangler r2 bucket create zp-intake-assets`.
-2. Leave it private. Don't turn on public access.
+If you ever need to rebuild them from scratch: `npx wrangler d1 create zp-intake`, paste the new `database_id` into `apps/worker/wrangler.toml`, run `npm run db:migrate:remote --workspace apps/worker`, then `npx wrangler r2 bucket create zp-intake-assets`. Keep the bucket private.
 
-### 4. Put the API online
+### 3. Put the API online
 1. Run `cd apps/worker`.
 2. Make your secret keys. For each line, run the command, then paste the value when it asks:
    - `openssl rand -base64 32` → copy the result → `npx wrangler secret put SECRETS_ENCRYPTION_KEY` → paste.
@@ -97,18 +92,18 @@ Do these in order. Each step says what to type or click. Anything in `CAPS_LIKE_
 3. Run `npx wrangler deploy`. It prints your API address, like `https://zp-intake-api.YOURNAME.workers.dev`. Copy it.
 4. **Never lose `SECRETS_ENCRYPTION_KEY`.** If it changes, keys clients already sent can't be read.
 
-### 5. Put the wizard online (Cloudflare Pages)
+### 4. Put the wizard online (Cloudflare Pages)
 1. In the Cloudflare dashboard, go to **Workers & Pages → Create → Pages → Connect to Git**.
 2. Pick the `zp-intake-portal` repository.
 3. Settings:
    - Build command: `npm run build`
    - Build output folder: `apps/web/dist`
-   - Environment variables: `VITE_API_BASE` = your API address from step 4.3 (no slash at the end), and `NODE_VERSION` = `22`
+   - Environment variables: `VITE_API_BASE` = your API address from step 3.3 (no slash at the end), and `NODE_VERSION` = `22`
 4. Click **Save and Deploy**. It gives you a Pages address, like `https://zp-intake.pages.dev`.
 5. Back in `apps/worker/wrangler.toml`, put that Pages address in both `PORTAL_URL` and `ALLOWED_ORIGIN`.
 6. Run `npx wrangler deploy` again (from `apps/worker`) so the API knows where the wizard lives.
 
-### 6. Connect Stripe
+### 5. Connect Stripe
 1. In Stripe, go to **Developers → Webhooks → Add endpoint**.
 2. Endpoint URL: your API address + `/api/stripe/webhook`.
 3. Event to send: `invoice.paid` only.
@@ -121,22 +116,22 @@ Do these in order. Each step says what to type or click. Anything in `CAPS_LIKE_
    - `client_name` → optional; otherwise the customer name is used
 7. Test it: in Stripe **test mode**, send yourself an invoice with the metadata above and pay it with the test card `4242 4242 4242 4242`. Then check the project with the admin command below. (`stripe trigger invoice.paid` from the Stripe CLI also proves the signature works, but its sample invoice doesn't carry your metadata, so the portal logs it and ignores it.)
 
-### 7. Emails (Resend) — needs a domain
+### 6. Emails (Resend) — needs a domain
 Resend only sends from a domain you own and verify. A Proton address can't be the sender.
 - **Until you have a domain:** skip this. Make links with the admin command below and send them from your Proton email yourself.
 - **Once you have a domain:** verify it in Resend, create an API key, run `npx wrangler secret put RESEND_API_KEY`, set `RECEIPT_FROM_EMAIL` in `wrangler.toml` to something like `intake@yourdomain.com`, and deploy again. `AGENCY_EMAIL` stays as the reply-to.
 
-### 8. Jira (optional)
+### 7. Jira (optional)
 1. Create an API token at id.atlassian.com → Security → API tokens.
 2. In `wrangler.toml`, set `JIRA_DOMAIN` (like `zinkpress.atlassian.net`) and `JIRA_PROJECT_KEY` (like `ZP`).
 3. Run `npx wrangler secret put JIRA_EMAIL` (your Atlassian login) and `npx wrangler secret put JIRA_API_TOKEN`.
 4. Deploy again. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
 
-### 9. Optional extras
+### 8. Optional extras
 - `npx wrangler secret put GITHUB_TOKEN` with a fine-grained GitHub token that has no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
 - A nicer address like `intake.yourdomain.com`: in Pages → Custom domains. Then update `PORTAL_URL` and `ALLOWED_ORIGIN` and deploy again.
 
-Every `npx wrangler ...` command in steps 6 to 9 runs from the `apps/worker` folder.
+Every `npx wrangler ...` command in steps 5 to 8 runs from the `apps/worker` folder.
 
 ## Your admin commands
 
