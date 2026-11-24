@@ -2,8 +2,8 @@
 /**
  * Shows one project's client API keys on YOUR computer only.
  *
- * Usage (from apps/worker):
- *   SECRETS_ENCRYPTION_KEY="the same value you gave wrangler" node scripts/reveal-secrets.mjs ZP-2026-014
+ * Usage (from the repo's top folder):
+ *   SECRETS_ENCRYPTION_KEY="the same value you saved in Cloudflare" node scripts/reveal-secrets.mjs ZP-2026-014
  * Add --local to read your local dev database instead of the live one.
  *
  * It asks wrangler for the encrypted blob, then decrypts it here. The key never leaves your machine.
@@ -21,7 +21,7 @@ if (!projectId || !/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(projectId)) {
   process.exit(1);
 }
 if (!keyB64) {
-  console.error("Set SECRETS_ENCRYPTION_KEY first (the value you stored with `wrangler secret put`).");
+  console.error("Set SECRETS_ENCRYPTION_KEY first (the same value you saved in Cloudflare).");
   process.exit(1);
 }
 
@@ -44,7 +44,13 @@ if (!row.c) {
   process.exit(0);
 }
 
-const key = await crypto.subtle.importKey("raw", Buffer.from(keyB64, "base64"), { name: "AES-GCM" }, false, ["decrypt"]);
+// Same rule as apps/worker/src/crypto.ts: 32-byte base64 is used as-is, anything else goes through SHA-256.
+const secret = keyB64.trim();
+let keyBytes = /^[A-Za-z0-9+/]{43}=$/.test(secret) ? Buffer.from(secret, "base64") : null;
+if (!keyBytes || keyBytes.length !== 32) {
+  keyBytes = Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret)));
+}
+const key = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["decrypt"]);
 const plain = await crypto.subtle.decrypt(
   { name: "AES-GCM", iv: Buffer.from(row.iv, "base64"), additionalData: new TextEncoder().encode(projectId) },
   key,

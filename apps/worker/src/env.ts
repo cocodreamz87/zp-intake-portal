@@ -1,4 +1,4 @@
-/** Everything the Worker reads from wrangler.toml [vars], bindings, and `wrangler secret put`. */
+/** Everything the Worker reads from wrangler.toml [vars], bindings, and Secrets set in the Cloudflare dashboard. */
 export interface Env {
   // Bindings
   DB: D1Database;
@@ -7,8 +7,10 @@ export interface Env {
   // Plain settings ([vars] in wrangler.toml)
   AGENCY_NAME: string;
   AGENCY_EMAIL: string;
-  PORTAL_URL: string;
-  ALLOWED_ORIGIN: string;
+  /** Where the intake form lives. Empty = this Worker's own address. */
+  PORTAL_URL?: string;
+  /** Extra sites allowed to call the API from a browser (comma list). Empty = same site only. */
+  ALLOWED_ORIGIN?: string;
   BUSINESS_TIMEZONE?: string;
   HOLIDAYS?: string;
   TOKEN_TTL_DAYS?: string;
@@ -21,7 +23,7 @@ export interface Env {
   JIRA_EPIC_TYPE?: string;
   JIRA_TASK_TYPE?: string;
 
-  // Secrets (wrangler secret put NAME)
+  // Secrets (Cloudflare dashboard: Settings > Variables and Secrets, type Secret)
   STRIPE_WEBHOOK_SECRET?: string;
   SECRETS_ENCRYPTION_KEY?: string;
   ADMIN_API_TOKEN?: string;

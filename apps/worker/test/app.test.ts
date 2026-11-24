@@ -97,7 +97,7 @@ beforeEach(() => {
     ASSETS_BUCKET: r2.bucket,
     AGENCY_NAME: "ZinkPress",
     AGENCY_EMAIL: "ZinkPress@proton.me",
-    PORTAL_URL: "https://intake.test",
+    PORTAL_URL: "", // empty: links should use the Worker's own address
     ALLOWED_ORIGIN: "https://intake.test",
     BUSINESS_TIMEZONE: "America/New_York",
     HOLIDAYS: "",
@@ -306,6 +306,7 @@ describe("admin and housekeeping", () => {
       body: JSON.stringify({ projectId: "ZP-CASH-1", tier: "TIER_1", clientEmail: "c@client.com", clientName: "Cash Client" }),
     });
     expect(created.status).toBe(201);
+    expect(created.json.link).toMatch(/^https:\/\/api\.test\/\?token=/);
     const oldToken = /token=([A-Za-z0-9_-]{43})/.exec(created.json.link)![1];
 
     await env.DB.prepare("UPDATE onboarding_sessions SET token_expires_at = '2000-01-01T00:00:00.000Z'").run();

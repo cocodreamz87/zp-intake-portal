@@ -1,0 +1,4 @@
+# Copy to .dev.vars (in the repo root) for `npm run dev`. Never commit .dev.vars.
+SECRETS_ENCRYPTION_KEY=any-long-random-password-at-least-32-characters
+ADMIN_API_TOKEN=another-long-random-password-at-least-32-characters
+STRIPE_WEBHOOK_SECRET=whsec_local_test_only
