@@ -8,6 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 
 # Housekeeping every hour: wipe client API keys after their purge date,
 # expire old links, retry Jira/receipt emails that failed.
+# The 8:17 AM Eastern run also posts the morning workload check to #sprint-ops.
 [triggers]
 crons = ["17 * * * *"]
 
@@ -46,3 +47,10 @@ JIRA_TASK_TYPE = "Task"
 #   JIRA_EMAIL              your Atlassian login email (optional)
 #   JIRA_API_TOKEN          from id.atlassian.com (optional)
 #   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)
+#
+# Slack alerts (all optional; each one is skipped until its URL is set).
+# Each value is a Slack Incoming Webhook URL (https://hooks.slack.com/services/...).
+#   SLACK_WEBHOOK_REVENUE     #pipeline-revenue   invoice paid
+#   SLACK_WEBHOOK_SPRINT_OPS  #sprint-ops         sprint clock started, Jira epic ready, 8 AM workload check
+#   SLACK_WEBHOOK_APPROVALS   #staging-approvals  reserved for staging approvals (nothing posts here yet)
+#   SLACK_WEBHOOK_ERRORS      #worker-errors      any 500 error, and kickoff follow-ups that fail

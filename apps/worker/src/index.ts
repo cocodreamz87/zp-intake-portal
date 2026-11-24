@@ -23,12 +23,13 @@ import {
   reissueToken,
   type SessionRow,
 } from "./db";
-import { intakeLinkEmail, sendEmail } from "./email";
+import { formatInZone, intakeLinkEmail, sendEmail } from "./email";
 import { numberVar, resendConfigured, type Env } from "./env";
 import { checkUpload, type UploadKind } from "./files";
 import { runPostSubmit, runScheduled } from "./followups";
 import { checkGithubAccount } from "./github";
 import { calculateSprintSchedule, DEFAULT_TIMEZONE, parseHolidays } from "./schedule";
+import { formatMoney, sendSlackAlert, tierLabel } from "./services/slack";
 import { readPaidInvoice, verifyStripeSignature } from "./stripe";
 
 /** Outbound fetch. Tests swap this for a fake so nothing real is ever called. */
@@ -62,6 +63,26 @@ app.use("*", async (c, next) => {
 
 app.onError((err, c) => {
   console.error(err);
+  // Tell #worker-errors. Runs in the background and can't throw, so the
+  // caller (Stripe, the wizard) still gets its normal 500 answer.
+  const stack = err instanceof Error && err.stack ? err.stack.split("\n").slice(0, 6).join("\n") : String(err);
+  waitUntil(
+    c,
+    sendSlackAlert(
+      c.env,
+      {
+        channel: "ERRORS",
+        title: `🔴 Worker error: ${c.req.method} ${c.req.path}`,
+        fields: [
+          { label: "Route", value: `${c.req.method} ${c.req.path}` },
+          { label: "Status", value: "500" },
+          { label: "Time", value: new Date().toISOString() },
+        ],
+        note: stack,
+      },
+      outbound,
+    ),
+  );
   return c.json({ error: "Something went wrong on our side. Please try again in a minute." }, 500);
 });
 
@@ -262,6 +283,27 @@ app.post("/api/onboarding/submit", requireSession, async (c) => {
     secretsStored: Object.keys(data.secrets), // key names only, never values
   });
 
+  const tz = env.BUSINESS_TIMEZONE || DEFAULT_TIMEZONE;
+  waitUntil(
+    c,
+    sendSlackAlert(
+      env,
+      {
+        channel: "SPRINT_OPS",
+        title: `🚀 Sprint clock running: ${row.project_id}`,
+        fields: [
+          { label: "Client", value: row.client_name },
+          { label: "Tier", value: tierLabel(row.tier) },
+          { label: "Kickoff", value: formatInZone(schedule.clockStartedAt, tz) },
+          { label: "Staging due", value: formatInZone(schedule.guaranteedDeadline, tz) },
+          { label: "Point of contact", value: data.spocName },
+          { label: "GitHub", value: gh.status === "exists" ? gh.login : `${data.githubTarget} (not verified)` },
+        ],
+        note: "The Jira epic link follows here once it's created.",
+      },
+      outbound,
+    ),
+  );
   waitUntil(c, runPostSubmit(env, row.id, outbound));
   return c.json({ clockStartedAt: schedule.clockStartedAt, guaranteedDeadline: schedule.guaranteedDeadline } as SubmitResult);
 });
@@ -353,6 +395,30 @@ app.post("/api/stripe/webhook", async (c) => {
     invoiceId: info.invoiceId,
   });
   await env.DB.prepare("INSERT OR IGNORE INTO stripe_events (event_id) VALUES (?)").bind(info.eventId).run();
+
+  // Only for a new intake, so a re-sent invoice doesn't post twice.
+  // Never include the intake link: it works like a password for the client.
+  if (result.status === "created") {
+    waitUntil(
+      c,
+      sendSlackAlert(
+        env,
+        {
+          channel: "REVENUE",
+          title: `💰 Invoice paid: ${formatMoney(info.amountPaid, info.currency)}`,
+          fields: [
+            { label: "Client", value: info.clientName },
+            { label: "Project", value: info.projectId },
+            { label: "Tier", value: tierLabel(info.tier) },
+            { label: "Amount", value: formatMoney(info.amountPaid, info.currency) },
+            { label: "Intake link", value: result.emailed ? `Emailed to ${info.clientEmail}` : "Not emailed (Resend isn't set up)" },
+            { label: "Stripe invoice", value: info.invoiceId },
+          ],
+        },
+        outbound,
+      ),
+    );
+  }
   return c.json({ received: true, session: result.status });
 });
 

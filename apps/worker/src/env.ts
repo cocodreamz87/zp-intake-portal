@@ -29,6 +29,13 @@ export interface Env {
   JIRA_API_TOKEN?: string;
   RESEND_API_KEY?: string;
   GITHUB_TOKEN?: string;
+
+  // Slack Incoming Webhook URLs, one per channel (optional; each alert is
+  // skipped quietly when its URL isn't set). The URL itself is the secret.
+  SLACK_WEBHOOK_REVENUE?: string; // #pipeline-revenue
+  SLACK_WEBHOOK_SPRINT_OPS?: string; // #sprint-ops
+  SLACK_WEBHOOK_APPROVALS?: string; // #staging-approvals
+  SLACK_WEBHOOK_ERRORS?: string; // #worker-errors
 }
 
 export function numberVar(v: string | undefined, fallback: number): number {

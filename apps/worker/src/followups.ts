@@ -4,6 +4,8 @@ import { kickoffReceiptEmail, sendEmail } from "./email";
 import { jiraConfigured, resendConfigured, type Env } from "./env";
 import { provisionJiraSprint } from "./jira";
 import { calculateSprintSchedule, DEFAULT_TIMEZONE, parseHolidays } from "./schedule";
+import { sendSlackAlert, tierLabel } from "./services/slack";
+import { runDailyWorkloadCheck } from "./workload";
 
 /**
  * Work that happens after the clock starts: Jira epic and the kickoff receipt email.
@@ -58,6 +60,20 @@ export async function runPostSubmit(
           .bind(nowIso(), nowIso(), row.id)
           .run();
         await audit(env.DB, row, "jira.synced", result);
+        await sendSlackAlert(
+          env,
+          {
+            channel: "SPRINT_OPS",
+            title: `🗂️ Jira epic ready: ${row.project_id}`,
+            fields: [
+              { label: "Client", value: row.client_name },
+              { label: "Epic", value: result.epicKey },
+              { label: "Tasks", value: `${result.createdTasks + result.existingTasks}` },
+            ],
+            links: [{ label: "Open Jira epic", url: `https://${env.JIRA_DOMAIN}/browse/${encodeURIComponent(result.epicKey)}` }],
+          },
+          fetchImpl,
+        );
       } catch (err) {
         errors.push(`jira: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -89,10 +105,29 @@ export async function runPostSubmit(
     }
   }
 
+  const lastError = errors.length ? errors.join(" | ").slice(0, 1000) : null;
   await env.DB.prepare("UPDATE onboarding_sessions SET last_error = ?, updated_at = ? WHERE id = ?")
-    .bind(errors.length ? errors.join(" | ").slice(0, 1000) : null, nowIso(), row.id)
+    .bind(lastError, nowIso(), row.id)
     .run();
-  if (errors.length) await audit(env.DB, row, "followup.failed", errors);
+  if (errors.length) {
+    await audit(env.DB, row, "followup.failed", errors);
+    // The hourly cron retries failures, so only alert when the error is new or changed.
+    if (lastError !== row.last_error) {
+      await sendSlackAlert(
+        env,
+        {
+          channel: "ERRORS",
+          title: `🔴 Kickoff follow-up failed: ${row.project_id}`,
+          fields: [
+            { label: "Client", value: row.client_name },
+            { label: "Tier", value: tierLabel(row.tier) },
+          ],
+          note: `${lastError}\nThe hourly job will keep retrying.`,
+        },
+        fetchImpl,
+      );
+    }
+  }
 }
 
 /** Daily (or hourly) housekeeping, run by the cron trigger in wrangler.toml. */
@@ -125,10 +160,20 @@ export async function runScheduled(env: Env, fetchImpl: typeof fetch = fetch) {
   ).all<{ id: string }>();
   for (const r of pending.results ?? []) await runPostSubmit(env, r.id, fetchImpl, { logSkips: false });
 
+  // 4. Morning workload check to #sprint-ops (only in the 8 AM Eastern hour, once a day).
+  let dailyCheck: Awaited<ReturnType<typeof runDailyWorkloadCheck>> | { ran: false; reason: "error" };
+  try {
+    dailyCheck = await runDailyWorkloadCheck(env, fetchImpl, new Date(now));
+  } catch (err) {
+    console.error("daily workload check failed:", err);
+    dailyCheck = { ran: false, reason: "error" };
+  }
+
   const summary = {
     secretsPurged: purge.meta?.changes ?? 0,
     linksExpired: expired.meta?.changes ?? 0,
     followupsRetried: pending.results?.length ?? 0,
+    dailyCheck,
   };
   if (summary.secretsPurged || summary.linksExpired) await audit(env.DB, null, "cron", summary);
   return summary;

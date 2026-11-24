@@ -127,7 +127,30 @@ Resend only sends from a domain you own and verify. A Proton address can't be th
 3. Run `npx wrangler secret put JIRA_EMAIL` (your Atlassian login) and `npx wrangler secret put JIRA_API_TOKEN`.
 4. Deploy again. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
 
-### 8. Optional extras
+### 8. Slack alerts (optional)
+The Worker can post to four channels in your ZinkPress Slack. Each alert is skipped until its webhook URL is set, and a Slack problem never breaks a Stripe webhook or a client's submit.
+
+| Channel | Secret | What posts there |
+|---|---|---|
+| #pipeline-revenue | `SLACK_WEBHOOK_REVENUE` | Invoice paid: client, project, tier, the real amount from Stripe, whether the intake link was emailed. |
+| #sprint-ops | `SLACK_WEBHOOK_SPRINT_OPS` | Sprint clock started (kickoff and staging deadline in Eastern time), Jira epic ready (with a button), and an 8:17 AM check: a heads-up when 2 or more sprints are running, and a list of clients who've had their link over 48 hours without submitting. |
+| #staging-approvals | `SLACK_WEBHOOK_APPROVALS` | Nothing yet. Saved for the approve-staging buttons, which need a separate Slack app. |
+| #worker-errors | `SLACK_WEBHOOK_ERRORS` | Any 500 error (route plus the first lines of the error), and Jira or receipt follow-ups that fail (once per new error, not every hourly retry). |
+
+Slack messages never include a client's intake link or their API keys.
+
+Set it up:
+1. Go to https://api.slack.com/apps, click **Create New App** → **From scratch**, name it "ZinkPress Alerts", pick the ZinkPress workspace.
+2. Open **Incoming Webhooks**, turn it on, click **Add New Webhook to Workspace**, pick `#pipeline-revenue`, and click **Allow**. Copy the URL.
+3. Repeat step 2 for `#sprint-ops`, `#staging-approvals` and `#worker-errors`. Each channel gets its own URL.
+4. From `apps/worker`, run each of these and paste the matching URL when it asks:
+   - `npx wrangler secret put SLACK_WEBHOOK_REVENUE`
+   - `npx wrangler secret put SLACK_WEBHOOK_SPRINT_OPS`
+   - `npx wrangler secret put SLACK_WEBHOOK_APPROVALS`
+   - `npx wrangler secret put SLACK_WEBHOOK_ERRORS`
+5. Treat these URLs like passwords: anyone who has one can post to that channel.
+
+### 9. Optional extras
 - `npx wrangler secret put GITHUB_TOKEN` with a fine-grained GitHub token that has no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
 - A nicer address like `intake.yourdomain.com`: in Pages → Custom domains. Then update `PORTAL_URL` and `ALLOWED_ORIGIN` and deploy again.
 

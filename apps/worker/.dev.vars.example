@@ -4,3 +4,8 @@ SECRETS_ENCRYPTION_KEY=REPLACE_WITH_openssl_rand_-base64_32
 ADMIN_API_TOKEN=REPLACE_WITH_openssl_rand_-hex_32
 PORTAL_URL=http://localhost:5173
 ALLOWED_ORIGIN=http://localhost:5173
+# Optional: Slack Incoming Webhook URLs. Leave unset locally unless you want real posts.
+# SLACK_WEBHOOK_REVENUE=
+# SLACK_WEBHOOK_SPRINT_OPS=
+# SLACK_WEBHOOK_APPROVALS=
+# SLACK_WEBHOOK_ERRORS=
