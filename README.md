@@ -14,6 +14,8 @@ Client ──► intake form (same Worker) ──► submit ──► clock star
                                                    (Drive, Airtable, HubSpot, welcome email, Slack)
 ```
 
+Every API this Worker serves and every service it calls is documented in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
 One Cloudflare Worker does everything: `/api/...` addresses run the API, and every other address shows the intake form.
 
 | Folder | What it is |
