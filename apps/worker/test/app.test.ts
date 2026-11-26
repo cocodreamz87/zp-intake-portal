@@ -14,6 +14,8 @@ let r2: ReturnType<typeof fakeR2>;
 let jira: ReturnType<typeof fakeJira>;
 let emails: Array<{ to: string[]; subject: string; text: string; key: string | null }>;
 let pending: Promise<unknown>[];
+let landingCalls: Array<{ body: any; secret: string | null }>;
+let landingRespond: () => Response;
 
 const ctx = () =>
   ({ waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException() {}, props: {} }) as unknown as ExecutionContext;
@@ -92,6 +94,8 @@ beforeEach(() => {
   jira = fakeJira();
   emails = [];
   pending = [];
+  landingCalls = [];
+  landingRespond = () => Response.json({ ok: true, client_record_id: "rec1" });
   env = {
     DB: fakeD1(),
     ASSETS_BUCKET: r2.bucket,
@@ -126,6 +130,10 @@ beforeEach(() => {
         : Response.json({ login: name, type: "Organization" });
     }
     if (url.includes(".atlassian.net/")) return jira.handle(url, init);
+    if (url === "https://landing.test/api/onboard") {
+      landingCalls.push({ body: JSON.parse(String(init.body)), secret: new Headers(init.headers).get("X-Webhook-Secret") });
+      return landingRespond();
+    }
     throw new Error(`unexpected outbound call in test: ${url}`);
   }) as typeof fetch);
 });
@@ -354,5 +362,101 @@ describe("admin and housekeeping", () => {
     expect(good.headers.get("Access-Control-Allow-Origin")).toBe("https://intake.test");
     const evil = await req("/api/health", { headers: { Origin: "https://evil.test" } });
     expect(evil.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});
+
+describe("hand-off to zp-landing", () => {
+  let token: string;
+  const submit = async () => {
+    const { json } = await uploadLogo(token, fakePng(1600, 6));
+    const r = await req("/api/onboarding/submit", {
+      method: "POST",
+      headers: { ...auth(token), "Content-Type": "application/json" },
+      body: JSON.stringify(goodPayload(json.key)),
+    });
+    await Promise.all(pending);
+    return r;
+  };
+  const events = async () =>
+    (await env.DB.prepare("SELECT event FROM audit_log ORDER BY id").all<{ event: string }>()).results!.map((r) => r.event);
+
+  const landingFetch = (async (u: string, i: RequestInit) => {
+    if (u !== "https://landing.test/api/onboard") throw new Error(`unexpected cron call: ${u}`);
+    landingCalls.push({ body: JSON.parse(String(i.body)), secret: new Headers(i.headers).get("X-Webhook-Secret") });
+    return landingRespond();
+  }) as unknown as typeof fetch;
+
+  beforeEach(async () => {
+    await stripe(paidInvoice());
+    token = tokenFromLastEmail();
+  });
+
+  it("skips cleanly when the zp-landing settings are empty", async () => {
+    expect((await submit()).status).toBe(200);
+    expect(landingCalls).toHaveLength(0);
+    expect(await events()).toContain("landing.skipped");
+    const row: any = await env.DB.prepare("SELECT landing_synced_at, last_error FROM onboarding_sessions").first();
+    expect(row.landing_synced_at).toBeNull();
+    expect(row.last_error).toBeNull();
+  });
+
+  it("posts the client once after submit, with the secret header and project_id as event_id", async () => {
+    env.ZP_LANDING_ONBOARD_URL = "https://landing.test/api/onboard";
+    env.ZP_LANDING_WEBHOOK_SECRET = "landing-secret";
+    await submit();
+    expect(landingCalls).toHaveLength(1);
+    expect(landingCalls[0].secret).toBe("landing-secret");
+    expect(landingCalls[0].body).toEqual({
+      event_id: "ZP-2026-014",
+      company_name: "Acme Barbers",
+      contact_name: "Jordan Lee",
+      contact_email: "jordan@acme.com",
+      scope_tier: "TIER_2",
+    });
+    const row: any = await env.DB.prepare("SELECT landing_synced_at FROM onboarding_sessions").first();
+    expect(row.landing_synced_at).toBeTruthy();
+    expect(await events()).toContain("landing.synced");
+
+    // The cron job does not send it again.
+    await runScheduled(env, landingFetch);
+    expect(landingCalls).toHaveLength(1);
+  });
+
+  it("retries from the hourly cron when zp-landing returns a 500", async () => {
+    env.ZP_LANDING_ONBOARD_URL = "https://landing.test/api/onboard";
+    env.ZP_LANDING_WEBHOOK_SECRET = "landing-secret";
+    landingRespond = () => Response.json({ ok: false, failed_step: "drive" }, { status: 500 });
+    await submit();
+    let row: any = await env.DB.prepare("SELECT landing_synced_at, last_error FROM onboarding_sessions").first();
+    expect(row.landing_synced_at).toBeNull();
+    expect(row.last_error).toMatch(/zp-landing onboard failed \(500\)/);
+    expect(await events()).toContain("followup.failed");
+
+    landingRespond = () => Response.json({ ok: true, status: "partial", retryable_steps: ["hubspot"] });
+    await runScheduled(env, landingFetch);
+    row = await env.DB.prepare("SELECT landing_synced_at, last_error FROM onboarding_sessions").first();
+    expect(landingCalls).toHaveLength(2);
+    expect(landingCalls[1].body.event_id).toBe("ZP-2026-014"); // same id, so zp-landing resumes its run
+    expect(row.landing_synced_at).toBeTruthy();
+    expect(row.last_error).toBeNull();
+  });
+});
+
+describe("Resend sender guard", () => {
+  it("sends nothing when RECEIPT_FROM_EMAIL is empty, even with a Resend key", async () => {
+    env.RECEIPT_FROM_EMAIL = "";
+    const r = await stripe(paidInvoice());
+    expect(r.status).toBe(200);
+    expect(emails).toHaveLength(0);
+  });
+
+  it("sends from RECEIPT_FROM_EMAIL, never from the Proton AGENCY_EMAIL", async () => {
+    const seen: string[] = [];
+    setOutboundFetch((async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      if (String(input).startsWith("https://api.resend.com/")) seen.push(JSON.parse(String(init.body)).from);
+      return Response.json({ id: "email_1" });
+    }) as typeof fetch);
+    await stripe(paidInvoice());
+    expect(seen).toEqual(["ZinkPress <hello@zinkpress.test>"]);
   });
 });

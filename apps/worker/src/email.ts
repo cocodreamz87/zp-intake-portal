@@ -28,7 +28,9 @@ interface SendArgs {
 }
 
 export async function sendEmail(env: Env, args: SendArgs, fetchImpl: typeof fetch = fetch): Promise<string> {
-  const from = `${env.AGENCY_NAME} <${env.RECEIPT_FROM_EMAIL || env.AGENCY_EMAIL}>`;
+  // Callers check resendConfigured() first; never fall back to AGENCY_EMAIL (Resend rejects it).
+  if (!env.RECEIPT_FROM_EMAIL) throw new Error("RECEIPT_FROM_EMAIL is not set");
+  const from = `${env.AGENCY_NAME} <${env.RECEIPT_FROM_EMAIL}>`;
   const res = await fetchImpl("https://api.resend.com/emails", {
     method: "POST",
     headers: {
