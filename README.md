@@ -28,13 +28,13 @@ One Cloudflare Worker does everything: `/api/...` addresses run the API, and eve
 - **Time zone:** Eastern (`America/New_York`). It follows daylight saving on its own, so it's EST in winter and EDT in summer. To change it, edit `BUSINESS_TIMEZONE` in `wrangler.toml` (in the repo's top folder). That one setting drives everything.
 - **Kickoff:** the next 9:00 AM Eastern on a business day, at or after the moment the client submits. Submit Tuesday 7:30 AM, kickoff is Tuesday 9:00 AM. Submit Tuesday 9:05 AM or Friday night, kickoff is the next business morning.
 - **Business days:** Monday to Friday, minus the dates in `HOLIDAYS` (edit that list to your own days off).
-- **Deadlines:** Tier 1 = 2 business days (the "48 hours"), Tier 2 = 10 business days (the top of the 7 to 10 days sold), Tier 3 = 20 business days (the top of the 3 to 4 weeks sold), each landing at 9:00 AM Eastern.
+- **Deadlines:** Tier 1 = 5 business days (one working week), Tier 2 = 10 business days (the top of the 7 to 10 days sold), Tier 3 = 20 business days (the top of the 3 to 4 weeks sold), each landing at 9:00 AM Eastern.
 
 ## What's different from the pasted spec (and why)
 
 1. **Deadline used the wrong clock.** Workers run in UTC, so `setHours(9)` meant 9 AM in London (4 or 5 AM in Atlanta), and the weekday check read the UTC day, so Friday evening in Atlanta counted as Saturday. The new code does all math in Eastern time. Tests cover daylight saving in March and November.
 2. **Deadline always added a day.** Submitting at 7 AM on a Tuesday pushed kickoff to Wednesday. Now a business-day morning before 9 AM kicks off that same morning.
-3. **"48 hours" vs "2 business days".** I chose 2 business days, so a Thursday kickoff is due Monday 9 AM instead of Saturday 9 AM. That keeps your weekends free, which was the stated goal. If you'd rather promise true 48 clock hours, it's one line in `apps/worker/src/schedule.ts`.
+3. **Deadlines count business days, not clock hours.** Weekends and the dates in `HOLIDAYS` never count, so a Thursday kickoff never comes due on a Saturday. That keeps your weekends free, which was the stated goal. The day count for each tier is one line in `apps/worker/src/schedule.ts`.
 4. **R2 presigned URLs.** Those need separate S3-style access keys that the spec never set up. Uploads now go through the Worker straight into R2 using the built-in binding, so there are no extra keys, and the Worker checks the actual file bytes first (real PNG, at least 1000px wide, transparent; real SVG with no scripts; real EPS).
 5. **The link token was just the row id.** Now it's 256 random bits that can't be guessed. Only its hash is stored. It expires after 14 days (`TOKEN_TTL_DAYS`), is removed from the address bar as soon as the page loads, and is sent in a header, not in the URL path. You can reissue a fresh link anytime.
 6. **Zod `errorMap` syntax.** `z.literal(true, { errorMap })` breaks between Zod versions. Checkboxes now use a plain `refine`, which works on Zod 3 and 4.

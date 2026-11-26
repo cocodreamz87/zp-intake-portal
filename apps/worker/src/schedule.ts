@@ -12,8 +12,8 @@ import type { Tier } from "@zinkpress/shared";
  *    Saturday -> kickoff Monday 9:00 AM.
  * 2. Business days are Monday to Friday, minus any dates listed in HOLIDAYS.
  * 3. Deadline = kickoff + N business days, same 9:00 AM wall-clock time.
- *    TIER_1 = 2 business days (that is the "48 hours", counted on business days
- *    so a Thursday kickoff lands Monday 9 AM, not Saturday 9 AM).
+ *    TIER_1 = 5 business days (one working week, so a Monday kickoff lands
+ *    the next Monday 9 AM).
  *    TIER_2 = 10 business days (the top of the "7 to 10 business days" sold),
  *    TIER_3 = 20 business days (the top of the "3 to 4 weeks" sold).
  *
@@ -27,7 +27,7 @@ export const DEFAULT_TIMEZONE = "America/New_York";
 export const KICKOFF_HOUR = 9;
 
 export const BUSINESS_DAYS_BY_TIER: Record<Tier, number> = {
-  TIER_1: 2,
+  TIER_1: 5,
   TIER_2: 10,
   TIER_3: 20,
 };

@@ -9,7 +9,7 @@ describe("calculateSprintSchedule (America/New_York)", () => {
     // Tue Nov 24 2026, 7:30 AM EST
     const r = calculateSprintSchedule(new Date("2026-11-24T12:30:00Z"), "TIER_1");
     expect(r.clockStartedAt).toBe("2026-11-24T14:00:00.000Z"); // Tue 9:00 AM EST
-    expect(r.guaranteedDeadline).toBe("2026-11-26T14:00:00.000Z"); // Thu 9:00 AM EST (no holidays given)
+    expect(r.guaranteedDeadline).toBe("2026-12-01T14:00:00.000Z"); // next Tue 9:00 AM EST (no holidays given)
   });
 
   it("exactly 9:00:00 AM still counts as today", () => {
@@ -21,21 +21,21 @@ describe("calculateSprintSchedule (America/New_York)", () => {
     // Tue 10:00 AM EST
     const r = calculateSprintSchedule(new Date("2026-11-24T15:00:00Z"), "TIER_1");
     expect(r.clockStartedAt).toBe("2026-11-25T14:00:00.000Z"); // Wed
-    expect(r.guaranteedDeadline).toBe("2026-11-27T14:00:00.000Z"); // Fri
+    expect(r.guaranteedDeadline).toBe("2026-12-02T14:00:00.000Z"); // next Wed
   });
 
   it("Friday night in Atlanta (already Saturday in UTC) kicks off Monday", () => {
     // Fri Nov 27 2026 10:00 PM EST = Sat 03:00Z. The original UTC-based code got this wrong.
     const r = calculateSprintSchedule(new Date("2026-11-28T03:00:00Z"), "TIER_1");
     expect(r.clockStartedAt).toBe("2026-11-30T14:00:00.000Z"); // Mon 9:00 AM
-    expect(r.guaranteedDeadline).toBe("2026-12-02T14:00:00.000Z"); // Wed 9:00 AM
+    expect(r.guaranteedDeadline).toBe("2026-12-07T14:00:00.000Z"); // next Mon 9:00 AM
   });
 
-  it("Tier 1 '48 hours' skips the weekend: Thursday kickoff lands Monday", () => {
+  it("Tier 1 is 5 business days and skips the weekend: Thursday kickoff lands next Thursday", () => {
     // Wed Dec 2 2026, 3:00 PM EST -> kickoff Thu Dec 3
     const r = calculateSprintSchedule(new Date("2026-12-02T20:00:00Z"), "TIER_1");
     expect(r.clockStartedAt).toBe("2026-12-03T14:00:00.000Z");
-    expect(r.guaranteedDeadline).toBe("2026-12-07T14:00:00.000Z"); // Mon, not Sat
+    expect(r.guaranteedDeadline).toBe("2026-12-10T14:00:00.000Z"); // next Thu, weekend skipped
   });
 
   it("Tier 2 is 10 business days, Tier 3 is 20", () => {
@@ -50,14 +50,14 @@ describe("calculateSprintSchedule (America/New_York)", () => {
     // Wed Nov 25 10 AM -> Thu & Fri are holidays -> kickoff Mon Nov 30
     const r = calculateSprintSchedule(new Date("2026-11-25T15:00:00Z"), "TIER_1", { holidays });
     expect(r.clockStartedAt).toBe("2026-11-30T14:00:00.000Z");
-    expect(r.guaranteedDeadline).toBe("2026-12-02T14:00:00.000Z");
+    expect(r.guaranteedDeadline).toBe("2026-12-07T14:00:00.000Z");
   });
 
   it("follows daylight saving: kickoff after the March switch is 9 AM EDT", () => {
     // Fri Mar 12 2027 noon EST. DST starts Sun Mar 14.
     const r = calculateSprintSchedule(new Date("2027-03-12T17:00:00Z"), "TIER_1");
     expect(r.clockStartedAt).toBe("2027-03-15T13:00:00.000Z"); // Mon 9:00 AM EDT
-    expect(r.guaranteedDeadline).toBe("2027-03-17T13:00:00.000Z");
+    expect(r.guaranteedDeadline).toBe("2027-03-22T13:00:00.000Z");
   });
 
   it("deadline crossing the November switch back to EST", () => {
