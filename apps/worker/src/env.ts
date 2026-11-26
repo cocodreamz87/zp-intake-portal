@@ -57,6 +57,18 @@ export interface Env {
   PANDADOC_WEBHOOK_KEY?: string;
   /** Optional var: comma list of Slack member ids (U0123...) allowed to approve contracts. Empty = anyone in the channel. */
   SLACK_CONTRACT_APPROVERS?: string;
+
+  // Part 2: status, re-auth links, testimonials, invoices from HubSpot deals
+  /** Days a re-auth (maintenance) link works. Default 7. */
+  MAINTENANCE_LINK_DAYS?: string;
+  /** Days re-entered keys are kept after the client sends them. Default 14 (or SECRETS_PURGE_DAYS after you mark the change done, if sooner). */
+  MAINTENANCE_PURGE_DAYS?: string;
+  /** Days after launch before the testimonial request email. Default 3. */
+  TESTIMONIAL_DELAY_DAYS?: string;
+  /** Private app token with crm.objects.deals/contacts/companies read and deals write. Same token as zp-landing's. */
+  HUBSPOT_ACCESS_TOKEN?: string;
+  /** Deal stage id after the invoice is made. Default "contractsent" (HubSpot's default pipeline). */
+  HUBSPOT_INVOICE_STAGE?: string;
 }
 
 export function numberVar(v: string | undefined, fallback: number): number {

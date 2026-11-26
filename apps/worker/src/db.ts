@@ -59,6 +59,11 @@ export interface SessionRow {
   client_approval_ip: string | null;
   client_approval_name: string | null;
   landing_completed_at: string | null;
+  milestone_half_sent_at: string | null;
+  milestone_full_sent_at: string | null;
+  deadline_alert_sent_at: string | null;
+  testimonial_requested_at: string | null;
+  hubspot_deal_id: string | null;
   created_at: string;
   updated_at: string;
 }

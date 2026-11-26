@@ -148,6 +148,8 @@ export interface NewInvoice {
   /** "deposit", "final", ... part of the idempotency key so a second invoice per project is possible. */
   milestone: string;
   send: boolean;
+  /** The HubSpot scoping deal this invoice closes (from POST /api/admin/invoices/from-deal). */
+  hubspotDealId?: string | null;
 }
 
 export interface CreatedInvoice {
@@ -214,6 +216,7 @@ export async function createAndSendInvoice(env: Env, inv: NewInvoice, fetchImpl:
     contact_email: inv.contactEmail,
     integrations: inv.integrations.join(","),
     milestone: inv.milestone,
+    ...(inv.hubspotDealId ? { hubspot_deal_id: inv.hubspotDealId } : {}),
   };
 
   // 2. Draft invoice with the bank-only payment settings, then 3. its line.

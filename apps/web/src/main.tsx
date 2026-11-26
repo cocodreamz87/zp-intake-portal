@@ -2,11 +2,16 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { SessionView } from "@zinkpress/shared";
 import { api, ApiError } from "./api";
+import { Maintenance } from "./Maintenance";
 import { Review } from "./Review";
-import { Receipt, Wizard } from "./Wizard";
+import { Status } from "./Status";
+import { Testimonial } from "./Testimonial";
+import { Wizard } from "./Wizard";
 import "./styles.css";
 
-const TOKEN_KEY = "zp-intake-token";
+/** The intake and review pages share one link token; re-auth and testimonial links are separate tokens. */
+const PAGE = window.location.pathname.replace(/\/$/, "") || "/";
+const TOKEN_KEY = PAGE === "/maintenance" ? "zp-maintenance-token" : PAGE === "/testimonial" ? "zp-testimonial-token" : "zp-intake-token";
 
 /**
  * Read ?token= once, keep it in this tab only, and remove it from the address bar
@@ -34,18 +39,32 @@ function takeToken(): string | null {
 
 function App() {
   const [token] = useState(takeToken);
-  const isReview = window.location.pathname.replace(/\/$/, "") === "/review";
+  const isReview = PAGE === "/review";
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(token ? null : "Open this page from the link in your email.");
 
   useEffect(() => {
-    if (!token || isReview) return;
+    if (!token || PAGE !== "/") return;
     api
       .session(token)
       .then(setSession)
       .catch((e) => setError(e instanceof ApiError ? e.message : "We couldn't reach the server. Try again in a minute."));
   }, [token]);
 
+  if (PAGE === "/maintenance" && token) {
+    return (
+      <main className="shell">
+        <Maintenance token={token} />
+      </main>
+    );
+  }
+  if (PAGE === "/testimonial" && token) {
+    return (
+      <main className="shell">
+        <Testimonial token={token} />
+      </main>
+    );
+  }
   if (isReview && token) {
     return (
       <main className="shell">
@@ -72,12 +91,10 @@ function App() {
     );
   }
   if (session.status !== "AWAITING_CREDENTIALS" && session.clockStartedAt && session.guaranteedDeadline) {
+    // After submit the same private link becomes a read-only status page with a live countdown.
     return (
       <main className="shell">
-        <Receipt
-          session={session}
-          result={{ clockStartedAt: session.clockStartedAt, guaranteedDeadline: session.guaranteedDeadline }}
-        />
+        <Status token={token} />
       </main>
     );
   }

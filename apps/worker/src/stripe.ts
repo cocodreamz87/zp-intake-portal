@@ -45,6 +45,8 @@ export interface PaidInvoiceInfo {
   /** Amount paid in Stripe's smallest unit (cents for USD). Null if Stripe didn't send it. */
   amountPaid: number | null;
   currency: string | null;
+  /** metadata hubspot_deal_id, set by POST /api/admin/invoices/from-deal. */
+  hubspotDealId: string | null;
 }
 
 /**
@@ -84,5 +86,6 @@ export function readPaidInvoice(event: any): PaidInvoiceInfo | { error: string }
     requiredIntegrations,
     amountPaid: typeof inv.amount_paid === "number" ? inv.amount_paid : null,
     currency: typeof inv.currency === "string" ? inv.currency : null,
+    hubspotDealId: /^\d{1,20}$/.test(String(md.hubspot_deal_id ?? "")) ? String(md.hubspot_deal_id) : null,
   };
 }

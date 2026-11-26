@@ -291,3 +291,27 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .receipt { grid-template-columns: 1fr; }
   .receipt dd { margin-bottom: 0.4rem; }
 }
+
+/* Client status page */
+.tracker { list-style: none; padding: 0; margin: 1.5rem 0 1.25rem; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+.tracker li {
+  display: flex; flex-direction: column; align-items: center; gap: 0.4rem; text-align: center;
+  font-family: var(--zp-font-display); font-size: 0.82rem; font-weight: 600; color: var(--zp-ink-gray);
+}
+.tracker .dot {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--zp-obsidian); border: 1px solid var(--zp-zinc-light);
+  font-family: var(--zp-font-mono); font-size: 0.75rem; color: var(--zp-parchment);
+}
+.tracker li.done { color: var(--zp-parchment); }
+.tracker li.done .dot { background: var(--zp-ok); border-color: var(--zp-ok); color: var(--zp-obsidian); }
+.tracker li.active { color: var(--zp-parchment); }
+.tracker li.active .dot { border-color: var(--zp-vermilion); box-shadow: 0 0 0 3px rgba(255, 77, 45, 0.2); }
+.progress-wrap { margin: 0 0 1rem; }
+.progress { height: 8px; background: var(--zp-obsidian); border: 1px solid var(--zp-zinc-light); border-radius: 999px; overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--zp-vermilion); transition: width 0.4s ease; }
+.countdown { color: var(--zp-vermilion); font-family: var(--zp-font-mono); font-weight: 500; }
+a.primary { display: inline-block; text-decoration: none; }
+@media (max-width: 520px) {
+  .tracker { grid-template-columns: repeat(2, 1fr); row-gap: 1rem; }
+}

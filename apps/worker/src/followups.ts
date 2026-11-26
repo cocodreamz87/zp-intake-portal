@@ -10,6 +10,8 @@ import { runDailyWorkloadCheck } from "./workload";
 import { reportingFetch, reportWorkerError } from "./services/errors";
 import { archiveSignedContract, draftAndRequestApproval, markLandingComplete } from "./contract-flow";
 import { pandadocConfigured } from "./contracts";
+import { maintenanceHousekeeping } from "./maintenance";
+import { runMilestones } from "./milestones";
 
 /**
  * Work that happens after the clock starts: Jira epic, the kickoff receipt email, and handing
@@ -188,6 +190,21 @@ export async function runScheduled(env: Env, fetchImpl: typeof fetch = fetch) {
   //     or copied to Drive, and launches not yet marked Complete in Airtable.
   const contracts = await retryContractsAndLaunch(env, fetchImpl);
 
+  // 3c. Re-auth links: wipe re-entered keys past their date, close links that ran out.
+  const maintenance = await maintenanceHousekeeping(env.DB, now);
+
+  // 3d. Client emails: 50% and 100% of the sprint, testimonial 3 days after launch (no-op without Resend),
+  //     and the #sprint-ops alert when a deadline arrives before staging is in review.
+  let milestones: Awaited<ReturnType<typeof runMilestones>> | { error: string };
+  try {
+    const base = env.PORTAL_URL?.trim().replace(/\/$/, "") || null; // the cron has no address of its own
+    milestones = await runMilestones(env, fetchImpl, new Date(now), base);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    milestones = { error: detail };
+    await reportWorkerError(env, { service: "zp-intake-portal", step: "milestone emails (cron)", status: "retrying", detail }, fetchImpl);
+  }
+
   // 4. Morning workload check to #sprint-ops (only in the 8 AM Eastern hour, once a day).
   let dailyCheck: Awaited<ReturnType<typeof runDailyWorkloadCheck>> | { ran: false; reason: "error" };
   try {
@@ -202,9 +219,11 @@ export async function runScheduled(env: Env, fetchImpl: typeof fetch = fetch) {
     linksExpired: expired.meta?.changes ?? 0,
     followupsRetried: pending.results?.length ?? 0,
     ...contracts,
+    ...maintenance,
+    milestones,
     dailyCheck,
   };
-  if (summary.secretsPurged || summary.linksExpired) await audit(env.DB, null, "cron", summary);
+  if (summary.secretsPurged || summary.linksExpired || summary.maintenanceKeysPurged) await audit(env.DB, null, "cron", summary);
   return summary;
 }
 

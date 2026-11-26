@@ -9,6 +9,9 @@ export function landingPayload(row: SessionRow) {
     contact_name: row.spoc_name || row.client_name,
     contact_email: row.spoc_email || row.client_email,
     scope_tier: row.tier,
+    // The scoping deal made when the lead filled the landing form: zp-landing moves it to Closed Won
+    // instead of making a second deal.
+    ...(row.hubspot_deal_id ? { hubspot_deal_id: row.hubspot_deal_id } : {}),
   };
 }
 
