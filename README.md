@@ -164,7 +164,16 @@ Set it up:
 4. In Cloudflare, add four Secrets (same way as step 4), each holding the matching address: `SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRINT_OPS`, `SLACK_WEBHOOK_APPROVALS`, `SLACK_WEBHOOK_ERRORS`.
 5. Treat these addresses like passwords: anyone who has one can post to that channel.
 
-### 10. Optional extras
+### 10. $500+ bank-only payments, contracts and launch sign-off
+Full details (every route, call and secret) are in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md). In short:
+
+1. **Database first.** Run `npm run db:migrate:remote` once before this code goes live. It applies `0003_contracts_review_kyb.sql`, which rebuilds the sessions table to add the `IN_REVIEW` status and the payment, KYB, contract and review columns (every existing row and value is kept).
+2. **Stripe key.** Add Secret `STRIPE_SECRET_KEY`: a restricted key with Invoices and Customers write, PaymentIntents and Charges read. Without it, a paid invoice of $500 or more is held (Stripe retries) because the Worker can't confirm it was paid by bank transfer. In Stripe, turn on **ACH Direct Debit** and **Bank transfers** under Settings → Payment methods. Make invoices with `POST /api/admin/invoices`: at $500+ they only offer ACH and bank transfer.
+3. **PandaDoc.** Add the tokens `Client.CompanyName`, `Client.ContactName`, `Client.Email`, `Project.ID`, `Project.Tier`, `Project.DeliveryBusinessDays`, `Project.Amount`, `Project.StartDate` and a recipient role `Client` to your MSA/SOW template. Add Secrets `PANDADOC_API_KEY`, `PANDADOC_TEMPLATE_ID`, `PANDADOC_WEBHOOK_KEY`. In PandaDoc → Settings → Webhooks, point "Document state changed" at `<portal>/api/pandadoc/webhook`.
+4. **Slack button.** Add an incoming webhook for `#contract-approvals` as `SLACK_WEBHOOK_CONTRACTS`. In the same Slack app, turn on **Interactivity & Shortcuts** with Request URL `<portal>/api/slack/interactions`, and add its **Signing Secret** as `SLACK_SIGNING_SECRET`.
+5. **Staging review.** When staging is ready, call `POST /api/admin/sessions/<project>/ready-for-review` with `stagingUrl`, `loomUrl` and `releaseNotes`. The client gets `/review?token=…`, watches the Loom, opens staging and clicks **Approve & Launch to Production**.
+
+### 11. Optional extras
 - A Secret named `GITHUB_TOKEN` holding a fine-grained GitHub token with no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
 - A nicer address like `intake.yourdomain.com`: on the Worker's page, **Settings → Domains & Routes → Add → Custom domain**. Then set `PORTAL_URL` in `wrangler.toml` to that address and push, so emailed links use it.
 

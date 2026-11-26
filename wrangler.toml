@@ -40,6 +40,7 @@ BUSINESS_TIMEZONE = "America/New_York"           # Eastern time; follows dayligh
 # plus the Friday after Thanksgiving so that week is a 4-day weekend. 2026 and 2027.
 # Delete a date to work it; add your own days off. Add 2028 before the end of 2027.
 HOLIDAYS = "2026-01-01,2026-01-19,2026-02-16,2026-05-25,2026-06-19,2026-07-03,2026-09-07,2026-10-12,2026-11-11,2026-11-26,2026-11-27,2026-12-25,2027-01-01,2027-01-18,2027-02-15,2027-05-31,2027-06-18,2027-07-05,2027-09-06,2027-10-11,2027-11-11,2027-11-25,2027-11-26,2027-12-24,2027-12-31"
+SLACK_CONTRACT_APPROVERS = ""                     # Slack member ids (U0123ABC,...) allowed to click Approve & Send. Empty = anyone in #contract-approvals
 TOKEN_TTL_DAYS = "14"                            # how long a client's intake link works
 SECRETS_PURGE_DAYS = "7"                         # wipe client API keys this many days after launch
 RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender. Empty = no emails at all (Resend rejects the Proton AGENCY_EMAIL)
@@ -69,4 +70,15 @@ JIRA_TASK_TYPE = "Task"
 #   SLACK_WEBHOOK_REVENUE     #pipeline-revenue   invoice paid
 #   SLACK_WEBHOOK_SPRINT_OPS  #sprint-ops         sprint clock started, Jira epic ready, 8 AM workload check
 #   SLACK_WEBHOOK_APPROVALS   #staging-approvals  reserved for staging approvals (nothing posts here yet)
-#   SLACK_WEBHOOK_ERRORS      #worker-errors      any 500 error, and kickoff follow-ups that fail
+#   SLACK_WEBHOOK_ERRORS      #worker-errors      any failed outside API call (Stripe, PandaDoc, Resend, Jira, zp-landing),
+#                                                 any 500, cards blocked on $500+ invoices (6-hour de-dupe)
+#   SLACK_WEBHOOK_CONTRACTS   #contract-approvals PandaDoc draft ready, with the Approve & Send Contract button
+#   SLACK_SIGNING_SECRET      Slack app > Basic Information > Signing Secret (checks every button click)
+#
+# Payments and contracts:
+#   STRIPE_SECRET_KEY         restricted key (rk_test_... while testing): Invoices + Customers write,
+#                             PaymentIntents + Charges read. Needed for the $500+ bank-only check; without it
+#                             a $500+ invoice.paid is held (503) and Stripe retries until it's set.
+#   PANDADOC_API_KEY          PandaDoc > Settings > Integrations > API (sandbox key while testing)
+#   PANDADOC_TEMPLATE_ID      the MSA/SOW template id (template_uuid)
+#   PANDADOC_WEBHOOK_KEY      PandaDoc > Settings > Webhooks > shared key

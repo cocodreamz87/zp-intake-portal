@@ -14,7 +14,7 @@
  */
 import type { Env } from "../env";
 
-export type SlackChannel = "REVENUE" | "SPRINT_OPS" | "APPROVALS" | "ERRORS";
+export type SlackChannel = "REVENUE" | "SPRINT_OPS" | "APPROVALS" | "ERRORS" | "CONTRACTS";
 
 /** Which secret holds the webhook URL for each channel. */
 export const SLACK_WEBHOOK_VARS: Record<SlackChannel, keyof Env> = {
@@ -22,6 +22,7 @@ export const SLACK_WEBHOOK_VARS: Record<SlackChannel, keyof Env> = {
   SPRINT_OPS: "SLACK_WEBHOOK_SPRINT_OPS", // #sprint-ops
   APPROVALS: "SLACK_WEBHOOK_APPROVALS", // #staging-approvals
   ERRORS: "SLACK_WEBHOOK_ERRORS", // #worker-errors
+  CONTRACTS: "SLACK_WEBHOOK_CONTRACTS", // #contract-approvals
 };
 
 export interface SlackAlert {
@@ -100,14 +101,25 @@ export function buildSlackMessage(alert: SlackAlert) {
 
 /** Sends one alert. Never throws. */
 export async function sendSlackAlert(env: Env, alert: SlackAlert, fetchImpl: typeof fetch = fetch): Promise<SlackResult> {
-  const url = String(env[SLACK_WEBHOOK_VARS[alert.channel]] ?? "").trim();
+  return postSlackMessage(env, alert.channel, buildSlackMessage(alert), fetchImpl);
+}
+
+/** Posts an already-built Block Kit message to a channel's webhook. Never throws. */
+export async function postSlackMessage(
+  env: Env,
+  channel: SlackChannel,
+  message: unknown,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SlackResult> {
+  const url = String(env[SLACK_WEBHOOK_VARS[channel]] ?? "").trim();
   if (!url) return { sent: false, reason: "not_configured" };
+  const alert = { channel };
 
   try {
     const init: RequestInit = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildSlackMessage(alert)),
+      body: JSON.stringify(message),
     };
     if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
       init.signal = AbortSignal.timeout(TIMEOUT_MS);

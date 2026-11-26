@@ -88,6 +88,8 @@ function goodPayload(logoKey: string) {
     adminEmails: ["owner@acme.com"],
     spocName: "Jordan Lee",
     spocEmail: "Jordan@Acme.com",
+    legalBusinessName: "Acme Barbers LLC",
+    einOrRegistration: "12-3456789",
   };
 }
 
@@ -485,6 +487,7 @@ describe("Slack alerts", () => {
     const inv = paidInvoice();
     (inv.data.object as any).amount_paid = 150000;
     (inv.data.object as any).currency = "usd";
+    (inv.data.object as any).charge = { id: "ch_1", payment_method_details: { type: "us_bank_account" } };
     await stripe(inv);
     const token = tokenFromLastEmail();
     const { json } = await uploadLogo(token, fakePng(1600, 6));
@@ -501,6 +504,7 @@ describe("Slack alerts", () => {
     const inv = paidInvoice();
     (inv.data.object as any).amount_paid = 150000;
     (inv.data.object as any).currency = "usd";
+    (inv.data.object as any).charge = { id: "ch_1", payment_method_details: { type: "us_bank_account" } };
     await stripe(inv);
     await Promise.all(pending);
     const token = tokenFromLastEmail();
@@ -541,8 +545,11 @@ describe("Slack alerts", () => {
   it("alerts #worker-errors once when a kickoff follow-up keeps failing", async () => {
     jira = fakeJira({ failBulkOnce: true });
     await paidAndSubmitted();
-    expect(posts("errors")).toHaveLength(1);
-    expect(posts("errors")[0].body.text).toContain("Kickoff follow-up failed");
+    // One alert for the failed Jira call itself, one summary for the follow-up job.
+    const texts = posts("errors").map((p) => p.body.text);
+    expect(texts).toHaveLength(2);
+    expect(texts).toContain("🔴 Jira error: POST /rest/api/3/issue/bulk");
+    expect(texts.some((t) => t.includes("Kickoff follow-up failed"))).toBe(true);
   });
 
   it("alerts #worker-errors on a 500, and the caller still gets its normal answer", async () => {
@@ -553,7 +560,7 @@ describe("Slack alerts", () => {
     await Promise.all(pending);
     expect(r.status).toBe(500);
     expect(posts("errors")).toHaveLength(1);
-    expect(posts("errors")[0].body.text).toBe("🔴 Worker error: GET /api/session");
+    expect(posts("errors")[0].body.text).toBe("🔴 zp-intake-portal error: GET /api/session");
     expect(allText(posts("errors")[0])).toContain("D1 is down");
   });
 

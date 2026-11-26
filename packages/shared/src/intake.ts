@@ -24,6 +24,7 @@ export const REGISTRARS = ["Cloudflare", "Namecheap", "GoDaddy", "Squarespace", 
 export const SESSION_STATUSES = [
   "AWAITING_CREDENTIALS",
   "CLOCK_RUNNING",
+  "IN_REVIEW",
   "LAUNCHED",
   "EXPIRED",
 ] as const;
@@ -95,10 +96,41 @@ export interface IntakeContext {
   tier: Tier;
   /** Key names the contract requires, for example STRIPE_SECRET_KEY. Tier 2/3 only. */
   requiredIntegrations: string[];
+  /** Legal business name + EIN/registration number required (Tier 2/3, or $2,500+). Default: Tier 2/3. */
+  businessCheckRequired?: boolean;
+  /** Approver must use a company-domain email, not gmail/yahoo/... Default: same as businessCheckRequired. */
+  companyEmailRequired?: boolean;
 }
+
+/** Invoices at or above this amount (cents) get the business check, whatever the tier. */
+export const KYB_AMOUNT_CENTS = 250_000;
+
+/**
+ * Free consumer mailboxes. On Tier 2/3 (or $2,500+) the approver must use an address on
+ * their company's own domain instead, unless you override it for that project.
+ */
+export const WEBMAIL_DOMAINS = [
+  "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com", "outlook.com", "live.com", "msn.com",
+  "icloud.com", "me.com", "mac.com", "aol.com", "protonmail.com", "proton.me", "gmx.com", "mail.com",
+] as const;
+
+export function isWebmail(email: string): boolean {
+  const domain = String(email).trim().toLowerCase().split("@")[1] ?? "";
+  return (WEBMAIL_DOMAINS as readonly string[]).includes(domain);
+}
+
+/** Tier 2/3, or an invoice of $2,500 or more. */
+export function needsBusinessCheck(tier: Tier, amountCents?: number | null): boolean {
+  return tier !== "TIER_1" || (typeof amountCents === "number" && amountCents >= KYB_AMOUNT_CENTS);
+}
+
+/** US EIN (12-3456789) or a state/company registration number: letters, digits, dashes, spaces. */
+export const BUSINESS_ID_RE = /^(?:\d{2}-?\d{7}|[A-Za-z0-9][A-Za-z0-9 ./-]{3,39})$/;
 
 export function buildIntakeSchema(ctx: IntakeContext) {
   const needsIntegrations = ctx.tier !== "TIER_1";
+  const businessCheck = ctx.businessCheckRequired ?? ctx.tier !== "TIER_1";
+  const companyEmail = ctx.companyEmailRequired ?? businessCheck;
 
   return z
     .object({
@@ -110,6 +142,9 @@ export function buildIntakeSchema(ctx: IntakeContext) {
         .string()
         .trim()
         .regex(GITHUB_NAME_RE, "Enter a real GitHub username or organization (letters, numbers, single hyphens)."),
+      // Business check (optional on Tier 1, required on Tier 2/3 or $2,500+)
+      legalBusinessName: z.string().trim().max(200, "That name is too long (max 200 characters).").default(""),
+      einOrRegistration: z.string().trim().max(40, "That number is too long.").default(""),
 
       // Step 2: Brand & content
       logoKey: z.string().min(1, "Upload your logo (.SVG, .EPS, or transparent .PNG at least 1000px wide)."),
@@ -128,6 +163,32 @@ export function buildIntakeSchema(ctx: IntakeContext) {
       spocEmail: email("Enter the approver's email address."),
     })
     .superRefine((data, issue) => {
+      if (data.einOrRegistration && !BUSINESS_ID_RE.test(data.einOrRegistration)) {
+        issue.addIssue({
+          code: "custom",
+          path: ["einOrRegistration"],
+          message: "Enter your EIN (like 12-3456789) or your state business registration number.",
+        });
+      }
+      if (businessCheck) {
+        if (data.legalBusinessName.length < 2) {
+          issue.addIssue({ code: "custom", path: ["legalBusinessName"], message: "Enter your company's legal name, as registered." });
+        }
+        if (!data.einOrRegistration) {
+          issue.addIssue({
+            code: "custom",
+            path: ["einOrRegistration"],
+            message: "Enter your EIN or state business registration number.",
+          });
+        }
+      }
+      if (companyEmail && isWebmail(data.spocEmail)) {
+        issue.addIssue({
+          code: "custom",
+          path: ["spocEmail"],
+          message: "Use an email on your company's own domain (not Gmail, Yahoo, Outlook, iCloud and the like).",
+        });
+      }
       if (!needsIntegrations) {
         if (Object.keys(data.secrets).length > 0) {
           issue.addIssue({ code: "custom", path: ["secrets"], message: "Tier 1 projects don't take API keys." });
@@ -153,7 +214,7 @@ export type IntakePayload = z.infer<ReturnType<typeof buildIntakeSchema>>;
 
 /** Which top-level fields belong to which wizard step (for per-step checkmarks). */
 export const STEP_FIELDS: Record<1 | 2 | 3 | 4, string[]> = {
-  1: ["registrarProvider", "registrarDelegatedConfirmed", "cloudflareAdminConfirmed", "githubTarget"],
+  1: ["registrarProvider", "registrarDelegatedConfirmed", "cloudflareAdminConfirmed", "githubTarget", "legalBusinessName", "einOrRegistration"],
   2: ["logoKey", "primaryHex", "secondaryHex", "font", "copy", "copyFinalizedConfirmed"],
   3: ["secrets", "adminEmails"],
   4: ["spocName", "spocEmail"],
@@ -184,6 +245,50 @@ export interface SessionView {
   tokenExpiresAt: string;
   clockStartedAt: string | null;
   guaranteedDeadline: string | null;
+  /** Step 1 asks for the legal business name and EIN/registration number. */
+  businessCheckRequired: boolean;
+  /** The approver email can't be gmail/yahoo/... */
+  companyEmailRequired: boolean;
+}
+
+/** What GET /api/review returns to the /review page. */
+export interface ReviewView {
+  projectId: string;
+  clientName: string;
+  tier: Tier;
+  status: SessionStatus;
+  agencyName: string;
+  agencyEmail: string;
+  stagingUrl: string | null;
+  loomUrl: string | null;
+  /** https://www.loom.com/embed/<id>, made from loomUrl. Null if it isn't a Loom share link. */
+  loomEmbedUrl: string | null;
+  releaseNotes: string | null;
+  reviewRequestedAt: string | null;
+  approvedAt: string | null;
+  approvedBy: string | null;
+}
+
+export interface ApproveResult {
+  status: "LAUNCHED";
+  approvedAt: string;
+}
+
+/** The sign-off sentence the client agrees to. Stored with their approval in the audit log. */
+export const LAUNCH_SIGNOFF_TEXT =
+  "I have reviewed the staging site, the walkthrough video and the release notes. I approve this build as final and authorize its launch to production.";
+
+/** Turns a Loom share link into its embed link. Anything else returns null. */
+export function loomEmbedUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:" || !/(^|\.)loom\.com$/.test(u.hostname)) return null;
+    const m = /^\/(?:share|embed)\/([0-9a-f]{20,64})\/?$/i.exec(u.pathname);
+    return m ? `https://www.loom.com/embed/${m[1]}` : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface SubmitResult {

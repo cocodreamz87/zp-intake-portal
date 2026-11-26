@@ -7,6 +7,9 @@ import { provisionJiraSprint } from "./jira";
 import { calculateSprintSchedule, DEFAULT_TIMEZONE, parseHolidays } from "./schedule";
 import { sendSlackAlert, tierLabel } from "./services/slack";
 import { runDailyWorkloadCheck } from "./workload";
+import { reportingFetch, reportWorkerError } from "./services/errors";
+import { archiveSignedContract, draftAndRequestApproval, markLandingComplete } from "./contract-flow";
+import { pandadocConfigured } from "./contracts";
 
 /**
  * Work that happens after the clock starts: Jira epic, the kickoff receipt email, and handing
@@ -18,12 +21,15 @@ import { runDailyWorkloadCheck } from "./workload";
 export async function runPostSubmit(
   env: Env,
   sessionId: string,
-  fetchImpl: typeof fetch = fetch,
+  baseFetch: typeof fetch = fetch,
   opts: { logSkips?: boolean } = {},
 ) {
   const logSkips = opts.logSkips ?? true;
   const row = await env.DB.prepare("SELECT * FROM onboarding_sessions WHERE id = ?").bind(sessionId).first<SessionRow>();
-  if (!row || row.status !== "CLOCK_RUNNING" || !row.clock_started_at || !row.guaranteed_deadline) return;
+  // IN_REVIEW too: staging can be ready before a failed hand-off finally goes through.
+  if (!row || (row.status !== "CLOCK_RUNNING" && row.status !== "IN_REVIEW") || !row.clock_started_at || !row.guaranteed_deadline) return;
+  // Every Jira / Resend / zp-landing call reports its own non-2xx answers to #worker-errors.
+  const fetchImpl = reportingFetch(env, baseFetch, { projectId: row.project_id });
   const errors: string[] = [];
 
   if (!row.jira_synced_at) {
@@ -173,10 +179,14 @@ export async function runScheduled(env: Env, fetchImpl: typeof fetch = fetch) {
   // 3. Retry Jira/receipt/zp-landing for anything that failed earlier.
   const pending = await env.DB.prepare(
     `SELECT id FROM onboarding_sessions
-     WHERE status = 'CLOCK_RUNNING' AND (jira_synced_at IS NULL OR receipt_sent_at IS NULL OR landing_synced_at IS NULL)
+     WHERE status IN ('CLOCK_RUNNING', 'IN_REVIEW') AND (jira_synced_at IS NULL OR receipt_sent_at IS NULL OR landing_synced_at IS NULL)
      ORDER BY submitted_at LIMIT 10`,
   ).all<{ id: string }>();
   for (const r of pending.results ?? []) await runPostSubmit(env, r.id, fetchImpl, { logSkips: false });
+
+  // 3b. Contracts and launch: drafts that never got made, signed PDFs not yet backed up
+  //     or copied to Drive, and launches not yet marked Complete in Airtable.
+  const contracts = await retryContractsAndLaunch(env, fetchImpl);
 
   // 4. Morning workload check to #sprint-ops (only in the 8 AM Eastern hour, once a day).
   let dailyCheck: Awaited<ReturnType<typeof runDailyWorkloadCheck>> | { ran: false; reason: "error" };
@@ -191,8 +201,60 @@ export async function runScheduled(env: Env, fetchImpl: typeof fetch = fetch) {
     secretsPurged: purge.meta?.changes ?? 0,
     linksExpired: expired.meta?.changes ?? 0,
     followupsRetried: pending.results?.length ?? 0,
+    ...contracts,
     dailyCheck,
   };
   if (summary.secretsPurged || summary.linksExpired) await audit(env.DB, null, "cron", summary);
   return summary;
+}
+
+/** One step at a time, 10 rows each, so a bad row can't stall the rest. Failures are reported, then retried next hour. */
+export async function retryContractsAndLaunch(env: Env, baseFetch: typeof fetch = fetch) {
+  const out = { contractsDrafted: 0, contractsArchived: 0, launchesCompleted: 0 };
+  const run = async (sql: string, step: string, fn: (id: string, f: typeof fetch) => Promise<unknown>) => {
+    const rows = (await env.DB.prepare(sql).all<{ id: string; project_id: string }>()).results ?? [];
+    let done = 0;
+    for (const r of rows) {
+      try {
+        await fn(r.id, reportingFetch(env, baseFetch, { projectId: r.project_id }));
+        done++;
+      } catch (err) {
+        await reportWorkerError(
+          env,
+          { service: "zp-intake-portal", step, projectId: r.project_id, status: "retrying", detail: err instanceof Error ? err.message : String(err) },
+          baseFetch,
+        );
+      }
+    }
+    return done;
+  };
+
+  if (pandadocConfigured(env)) {
+    // Only sessions created by a paid invoice under this version (amount_cents is set), so old test rows don't get drafts.
+    out.contractsDrafted = await run(
+      `SELECT id, project_id FROM onboarding_sessions
+       WHERE pandadoc_document_id IS NULL AND amount_cents IS NOT NULL AND stripe_invoice_id IS NOT NULL AND status != 'EXPIRED'
+       ORDER BY created_at LIMIT 10`,
+      "contract draft (cron)",
+      (id, f) => draftAndRequestApproval(env, id, f),
+    );
+    out.contractsArchived = await run(
+      `SELECT id, project_id FROM onboarding_sessions
+       WHERE contract_status = 'SIGNED'
+         AND (contract_r2_key IS NULL OR (contract_drive_synced_at IS NULL AND landing_synced_at IS NOT NULL AND ? = 1))
+       ORDER BY contract_signed_at LIMIT 10`.replace("?", landingConfigured(env) ? "1" : "0"),
+      "signed contract backup (cron)",
+      (id, f) => archiveSignedContract(env, id, f),
+    );
+  }
+  if (landingConfigured(env)) {
+    out.launchesCompleted = await run(
+      `SELECT id, project_id FROM onboarding_sessions
+       WHERE status = 'LAUNCHED' AND client_approved_at IS NOT NULL AND landing_completed_at IS NULL
+       ORDER BY client_approved_at LIMIT 10`,
+      "Airtable Complete (cron)",
+      (id, f) => markLandingComplete(env, id, f),
+    );
+  }
+  return out;
 }

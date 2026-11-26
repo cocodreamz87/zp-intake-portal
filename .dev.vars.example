@@ -7,3 +7,11 @@ STRIPE_WEBHOOK_SECRET=whsec_local_test_only
 # SLACK_WEBHOOK_SPRINT_OPS=
 # SLACK_WEBHOOK_APPROVALS=
 # SLACK_WEBHOOK_ERRORS=
+# SLACK_WEBHOOK_CONTRACTS=
+# SLACK_SIGNING_SECRET=
+# Optional: Stripe restricted test key (rk_test_...) for the $500+ bank-only check and POST /api/admin/invoices.
+# STRIPE_SECRET_KEY=
+# Optional: PandaDoc sandbox. Leave unset to skip contracts.
+# PANDADOC_API_KEY=
+# PANDADOC_TEMPLATE_ID=
+# PANDADOC_WEBHOOK_KEY=

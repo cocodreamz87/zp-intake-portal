@@ -25,6 +25,8 @@ interface FormState {
   registrarDelegatedConfirmed: boolean;
   cloudflareAdminConfirmed: boolean;
   githubTarget: string;
+  legalBusinessName: string;
+  einOrRegistration: string;
   logoKey: string;
   logoName: string;
   assetKeys: { key: string; name: string }[];
@@ -51,6 +53,8 @@ const EMPTY: FormState = {
   registrarDelegatedConfirmed: false,
   cloudflareAdminConfirmed: false,
   githubTarget: "",
+  legalBusinessName: "",
+  einOrRegistration: "",
   logoKey: "",
   logoName: "",
   assetKeys: [],
@@ -87,6 +91,8 @@ function toPayload(f: FormState, tierNeedsIntegrations: boolean) {
     registrarDelegatedConfirmed: f.registrarDelegatedConfirmed,
     cloudflareAdminConfirmed: f.cloudflareAdminConfirmed,
     githubTarget: f.githubTarget,
+    legalBusinessName: f.legalBusinessName,
+    einOrRegistration: f.einOrRegistration,
     logoKey: f.logoKey,
     primaryHex: f.primaryHex,
     secondaryHex: f.secondaryHex,
@@ -136,7 +142,13 @@ export function formatWhen(iso: string, timeZone: string) {
 export function Wizard({ token, session }: { token: string; session: SessionView }) {
   const needsIntegrations = session.tier !== "TIER_1";
   const schema = useMemo(
-    () => buildIntakeSchema({ tier: session.tier, requiredIntegrations: session.requiredIntegrations }),
+    () =>
+      buildIntakeSchema({
+        tier: session.tier,
+        requiredIntegrations: session.requiredIntegrations,
+        businessCheckRequired: session.businessCheckRequired,
+        companyEmailRequired: session.companyEmailRequired,
+      }),
     [session],
   );
 
@@ -319,6 +331,33 @@ export function Wizard({ token, session }: { token: string; session: SessionView
               onBlur={checkGithub}
             />
           </Field>
+          <h3 className="subhead">Business details{session.businessCheckRequired ? "" : " (optional)"}</h3>
+          <p className="muted small">
+            {session.businessCheckRequired
+              ? "We confirm every Growth and Custom client is a registered business before work starts."
+              : "Helps us put the right legal name on your contract."}
+          </p>
+          <Field label={`Legal business name${session.businessCheckRequired ? "" : " (optional)"}`} error={err("legalBusinessName")}>
+            <input
+              value={form.legalBusinessName}
+              placeholder="e.g. Acme Barbers LLC"
+              autoComplete="organization"
+              onChange={(e) => set("legalBusinessName", e.target.value)}
+            />
+          </Field>
+          <Field
+            label={`EIN or state registration number${session.businessCheckRequired ? "" : " (optional)"}`}
+            error={err("einOrRegistration")}
+            hint="Only our team sees this. It never goes into Slack, email or your contract."
+          >
+            <input
+              value={form.einOrRegistration}
+              placeholder="e.g. 12-3456789"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => set("einOrRegistration", e.target.value)}
+            />
+          </Field>
         </section>
       )}
 
@@ -492,7 +531,11 @@ export function Wizard({ token, session }: { token: string; session: SessionView
           <Field label="Approver's full name" error={err("spocName")}>
             <input value={form.spocName} autoComplete="name" onChange={(e) => set("spocName", e.target.value)} />
           </Field>
-          <Field label="Approver's email" error={err("spocEmail")}>
+          <Field
+            label="Approver's email"
+            error={err("spocEmail")}
+            hint={session.companyEmailRequired ? "Use an address on your company's own domain, not Gmail, Yahoo or Outlook." : undefined}
+          >
             <input type="email" value={form.spocEmail} autoComplete="email" onChange={(e) => set("spocEmail", e.target.value)} />
           </Field>
 

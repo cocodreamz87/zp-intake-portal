@@ -35,9 +35,35 @@ export interface SessionRow {
   launched_at: string | null;
   secrets_purge_after: string | null;
   secrets_purged_at: string | null;
+  contact_name: string | null;
+  amount_cents: number | null;
+  currency: string | null;
+  payment_rail: string | null;
+  legal_business_name: string | null;
+  ein_or_registration: string | null;
+  webmail_override: number;
+  webmail_override_reason: string | null;
+  pandadoc_document_id: string | null;
+  contract_status: ContractStatus | null;
+  contract_drafted_at: string | null;
+  contract_approved_by: string | null;
+  contract_sent_at: string | null;
+  contract_signed_at: string | null;
+  contract_r2_key: string | null;
+  contract_drive_synced_at: string | null;
+  staging_url: string | null;
+  loom_url: string | null;
+  release_notes: string | null;
+  review_requested_at: string | null;
+  client_approved_at: string | null;
+  client_approval_ip: string | null;
+  client_approval_name: string | null;
+  landing_completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
+
+export type ContractStatus = "DRAFT_PENDING_APPROVAL" | "SENDING" | "SENT" | "SIGNED" | "DECLINED" | "VOIDED";
 
 export const nowIso = () => new Date().toISOString();
 
@@ -73,6 +99,11 @@ export interface NewSession {
   requiredIntegrations: string[];
   stripeInvoiceId?: string | null;
   tokenTtlDays: number;
+  contactName?: string | null;
+  amountCents?: number | null;
+  currency?: string | null;
+  paymentRail?: string | null;
+  webmailOverride?: boolean;
 }
 
 /** Creates the session and returns the one-time plain token (only its hash is stored). */
@@ -83,8 +114,9 @@ export async function createSession(db: D1Database, s: NewSession) {
   await db
     .prepare(
       `INSERT INTO onboarding_sessions
-        (id, project_id, client_name, client_email, tier, token_hash, token_expires_at, stripe_invoice_id, required_integrations_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, client_name, client_email, tier, token_hash, token_expires_at, stripe_invoice_id, required_integrations_json,
+         contact_name, amount_cents, currency, payment_rail, webmail_override)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -96,6 +128,11 @@ export async function createSession(db: D1Database, s: NewSession) {
       expiresAt,
       s.stripeInvoiceId ?? null,
       JSON.stringify(s.requiredIntegrations),
+      s.contactName ?? null,
+      s.amountCents ?? null,
+      s.currency ?? null,
+      s.paymentRail ?? null,
+      s.webmailOverride ? 1 : 0,
     )
     .run();
   return { id, token, expiresAt };
