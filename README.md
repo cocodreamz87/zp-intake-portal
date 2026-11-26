@@ -28,7 +28,7 @@ One Cloudflare Worker does everything: `/api/...` addresses run the API, and eve
 - **Time zone:** Eastern (`America/New_York`). It follows daylight saving on its own, so it's EST in winter and EDT in summer. To change it, edit `BUSINESS_TIMEZONE` in `wrangler.toml` (in the repo's top folder). That one setting drives everything.
 - **Kickoff:** the next 9:00 AM Eastern on a business day, at or after the moment the client submits. Submit Tuesday 7:30 AM, kickoff is Tuesday 9:00 AM. Submit Tuesday 9:05 AM or Friday night, kickoff is the next business morning.
 - **Business days:** Monday to Friday, minus the dates in `HOLIDAYS` (edit that list to your own days off).
-- **Deadlines:** Tier 1 = 2 business days (the "48 hours"), Tier 2 = 5 business days, Tier 3 = 10 business days, each landing at 9:00 AM Eastern.
+- **Deadlines:** Tier 1 = 2 business days (the "48 hours"), Tier 2 = 10 business days (the top of the 7 to 10 days sold), Tier 3 = 20 business days (the top of the 3 to 4 weeks sold), each landing at 9:00 AM Eastern.
 
 ## What's different from the pasted spec (and why)
 
