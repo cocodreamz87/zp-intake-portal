@@ -2,6 +2,7 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { SessionView } from "@zinkpress/shared";
 import { api, ApiError } from "./api";
+import { Review } from "./Review";
 import { Receipt, Wizard } from "./Wizard";
 import "./styles.css";
 
@@ -33,17 +34,25 @@ function takeToken(): string | null {
 
 function App() {
   const [token] = useState(takeToken);
+  const isReview = window.location.pathname.replace(/\/$/, "") === "/review";
   const [session, setSession] = useState<SessionView | null>(null);
   const [error, setError] = useState<string | null>(token ? null : "Open this page from the link in your email.");
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || isReview) return;
     api
       .session(token)
       .then(setSession)
       .catch((e) => setError(e instanceof ApiError ? e.message : "We couldn't reach the server. Try again in a minute."));
   }, [token]);
 
+  if (isReview && token) {
+    return (
+      <main className="shell">
+        <Review token={token} />
+      </main>
+    );
+  }
   if (error) {
     return (
       <main className="shell">

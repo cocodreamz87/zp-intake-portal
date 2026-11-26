@@ -104,3 +104,23 @@ export function kickoffReceiptEmail(
     text: `Hi ${p.clientName}, project ${p.projectId} is in our build queue.\nOfficial kickoff: ${kickoff}\nGuaranteed staging delivery: ${deadline}${staging ? `\nStaging preview: ${staging}` : ""}`,
   };
 }
+
+export function reviewReadyEmail(
+  env: Env,
+  p: { clientName: string; projectId: string; link: string; stagingUrl: string; expiresAt: string },
+) {
+  const tz = env.BUSINESS_TIMEZONE || "America/New_York";
+  const expires = formatInZone(p.expiresAt, tz);
+  return {
+    subject: `${env.AGENCY_NAME}: your site is ready for review (${p.projectId})`,
+    html: shell(
+      env,
+      `<h1 style="font-size:22px">Your staging site is ready</h1>
+<p>Hi ${esc(p.clientName)}, project <strong>${esc(p.projectId)}</strong> is built and waiting for your review.</p>
+<p>Your review page has a short walkthrough video, the staging link and the release notes. When you're happy, approve the launch there.</p>
+<p><a href="${esc(p.link)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600">Review and approve</a></p>
+<p style="font-size:13px;color:#64748b">This private link works until ${esc(expires)}. Don't forward it: whoever has it can approve your launch.</p>`,
+    ),
+    text: `Hi ${p.clientName}, project ${p.projectId} is ready for your review.\nReview and approve the launch here:\n${p.link}\nThis private link works until ${expires}. Don't forward it.`,
+  };
+}

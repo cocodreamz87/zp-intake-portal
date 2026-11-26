@@ -74,8 +74,49 @@ describe("intake schema", () => {
     const e = errorsOf(t2, validTier1());
     expect(e["secrets.STRIPE_SECRET_KEY"]).toMatch(/required/);
     expect(e.adminEmails).toBeTruthy();
-    const ok = { ...validTier1(), secrets: { STRIPE_SECRET_KEY: "sk_test_123" }, adminEmails: ["owner@acme.com"] };
+    const ok = {
+      ...validTier1(),
+      secrets: { STRIPE_SECRET_KEY: "sk_test_123" },
+      adminEmails: ["owner@acme.com"],
+      legalBusinessName: "Acme Studio LLC",
+      einOrRegistration: "12-3456789",
+    };
     expect(t2.safeParse(ok).success).toBe(true);
+  });
+
+  it("Tier 2 needs the legal business name and an EIN or registration number; Tier 1 doesn't", () => {
+    const e = errorsOf(t2, { ...validTier1(), secrets: { STRIPE_SECRET_KEY: "sk" }, adminEmails: ["a@acme.com"] });
+    expect(e.legalBusinessName).toMatch(/legal name/);
+    expect(e.einOrRegistration).toMatch(/EIN/);
+    expect(t1.safeParse(validTier1()).success).toBe(true);
+    // Optional on Tier 1, but if given it must look like an EIN or registration number.
+    expect(errorsOf(t1, { ...validTier1(), einOrRegistration: "!!" }).einOrRegistration).toBeTruthy();
+    expect(t1.safeParse({ ...validTier1(), einOrRegistration: "123456789" }).success).toBe(true);
+  });
+
+  it("Tier 2 approver can't use a free mailbox unless the email rule is overridden", () => {
+    const base = {
+      ...validTier1(),
+      secrets: { STRIPE_SECRET_KEY: "sk" },
+      adminEmails: ["a@acme.com"],
+      legalBusinessName: "Acme Studio LLC",
+      einOrRegistration: "12-3456789",
+    };
+    for (const mail of ["jo@gmail.com", "jo@YAHOO.com", "jo@hotmail.com", "jo@outlook.com", "jo@icloud.com"]) {
+      expect(errorsOf(t2, { ...base, spocEmail: mail }).spocEmail, mail).toMatch(/company/);
+    }
+    const overridden = buildIntakeSchema({ tier: "TIER_2", requiredIntegrations: ["STRIPE_SECRET_KEY"], companyEmailRequired: false });
+    expect(overridden.safeParse({ ...base, spocEmail: "jo@gmail.com" }).success).toBe(true);
+    expect(t1.safeParse({ ...validTier1(), spocEmail: "jo@gmail.com" }).success).toBe(true);
+  });
+
+  it("a Tier 1 at $2,500 or more gets the business check too", async () => {
+    const { needsBusinessCheck } = await import("@zinkpress/shared");
+    expect(needsBusinessCheck("TIER_1", 249_999)).toBe(false);
+    expect(needsBusinessCheck("TIER_1", 250_000)).toBe(true);
+    expect(needsBusinessCheck("TIER_2", null)).toBe(true);
+    const big = buildIntakeSchema({ tier: "TIER_1", requiredIntegrations: [], businessCheckRequired: needsBusinessCheck("TIER_1", 300_000) });
+    expect(errorsOf(big, validTier1()).legalBusinessName).toBeTruthy();
   });
 
   it("key names must be CAPITAL_SNAKE_CASE (no free-form JSON blob)", () => {

@@ -35,6 +35,28 @@ export interface Env {
   GITHUB_TOKEN?: string;
   /** Same value as WEBHOOK_SECRET on zp-landing. */
   ZP_LANDING_WEBHOOK_SECRET?: string;
+
+  // Slack Incoming Webhook URLs, one per channel (optional; each alert is
+  // skipped quietly when its URL isn't set). The URL itself is the secret.
+  SLACK_WEBHOOK_REVENUE?: string; // #pipeline-revenue
+  SLACK_WEBHOOK_SPRINT_OPS?: string; // #sprint-ops
+  SLACK_WEBHOOK_APPROVALS?: string; // #staging-approvals
+  SLACK_WEBHOOK_ERRORS?: string; // #worker-errors
+  SLACK_WEBHOOK_CONTRACTS?: string; // #contract-approvals (the Approve & Send button)
+  /** Slack app > Basic Information > Signing Secret. Checks every button click. */
+  SLACK_SIGNING_SECRET?: string;
+
+  /** Restricted key (rk_test_... while testing): Invoices + Customers write, PaymentIntents + Charges read. */
+  STRIPE_SECRET_KEY?: string;
+
+  // PandaDoc contracts
+  PANDADOC_API_KEY?: string;
+  /** The MSA/SOW template's id (template_uuid). Plain var or secret. */
+  PANDADOC_TEMPLATE_ID?: string;
+  /** PandaDoc Settings > Webhooks > shared key. */
+  PANDADOC_WEBHOOK_KEY?: string;
+  /** Optional var: comma list of Slack member ids (U0123...) allowed to approve contracts. Empty = anyone in the channel. */
+  SLACK_CONTRACT_APPROVERS?: string;
 }
 
 export function numberVar(v: string | undefined, fallback: number): number {
