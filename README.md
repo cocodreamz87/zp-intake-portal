@@ -1,6 +1,6 @@
 # ZinkPress Intake Portal
 
-**No Credentials, No Clock.** A client pays a Stripe invoice, gets a private link, and fills in a 4-step form. The delivery clock starts only when every answer checks out. Then the portal opens a Jira epic with tasks and emails the client a kickoff receipt. No kickoff call needed.
+**No Credentials, No Clock.** A client pays a Stripe invoice, gets a private link, and fills in a 4-step form. The delivery clock starts only when every answer checks out. Then the portal opens a Jira epic with tasks, emails the client a kickoff receipt, and hands the client to zp-landing, which builds their Drive folder, Airtable and HubSpot records, welcome email and Slack alerts. No kickoff call needed.
 
 ```
 Stripe invoice.paid ──► zp-intake-portal Worker ──► D1 (session, status, audit log)
@@ -9,8 +9,12 @@ Stripe invoice.paid ──► zp-intake-portal Worker ──► D1 (session, sta
                                     │
 Client ──► intake form (same Worker) ──► submit ──► clock starts
                                               ├──► Jira epic + tasks
-                                              └──► kickoff receipt email
+                                              ├──► kickoff receipt email
+                                              └──► zp-landing POST /api/onboard
+                                                   (Drive, Airtable, HubSpot, welcome email, Slack)
 ```
+
+Every API this Worker serves and every service it calls is documented in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 One Cloudflare Worker does everything: `/api/...` addresses run the API, and every other address shows the intake form.
 
@@ -40,7 +44,7 @@ One Cloudflare Worker does everything: `/api/...` addresses run the API, and eve
 6. **Zod `errorMap` syntax.** `z.literal(true, { errorMap })` breaks between Zod versions. Checkboxes now use a plain `refine`, which works on Zod 3 and 4.
 7. **Secrets textarea accepted anything.** There's no raw JSON box anymore. The wizard shows one password field per key your contract needs (from the invoice's `integrations` metadata), plus "Add another key" rows. Names must be `CAPITAL_SNAKE_CASE`, checked on both sides.
 8. **No Stripe signature check.** Anyone who found the webhook URL could fake a paid invoice. The Worker now verifies `Stripe-Signature` (HMAC-SHA256), rejects events older than 5 minutes, and ignores repeat deliveries of the same event.
-9. **Jira could double the epic on a retry.** Every issue gets a project label. A retry finds the existing epic (saved in D1 or found by label) and creates only the missing tasks. Failed Jira or email work is retried by the hourly cron job.
+9. **Jira could double the epic on a retry.** Every issue gets a project label. A retry finds the existing epic (saved in D1 or found by label) and creates only the missing tasks. Failed Jira, email or zp-landing work is retried by the hourly cron job.
 10. **GitHub check was only a length check.** It now uses GitHub's real name rules, then asks GitHub's API whether the account exists. If GitHub is down, the client can still submit and the row is marked unverified for you.
 11. **Secrets purge wasn't built.** When you mark a project launched, the encrypted keys are wiped 7 days later (`SECRETS_PURGE_DAYS`) by the cron job.
 12. **One Worker instead of Pages + Worker.** The form and the API ship together as one Cloudflare Worker, so Cloudflare can build and deploy it from GitHub on every push, there's no cross-site setup, and client links use the Worker's own address automatically.
@@ -124,14 +128,24 @@ From now on, every push to the `main` branch on GitHub redeploys the portal on i
 Resend only sends from a domain you own and verify. A Proton address can't be the sender.
 - **Until you have a domain:** skip this. Make links with the admin command below and send them from your Proton email yourself.
 - **Once you have a domain:** verify it in Resend, create an API key, and add it in Cloudflare as a Secret named `RESEND_API_KEY`. In `wrangler.toml`, set `RECEIPT_FROM_EMAIL` to something like `intake@yourdomain.com` and push. `AGENCY_EMAIL` stays as the reply-to.
+- Nothing is emailed until **both** `RESEND_API_KEY` and `RECEIPT_FROM_EMAIL` are set. The portal never sends from `AGENCY_EMAIL`.
 
-### 7. Jira (optional)
+### 7. Hand clients to zp-landing
+zp-landing is the home of onboarding. This portal only collects the intake, then calls zp-landing once per client.
+1. In Cloudflare, on the `zp-intake-portal` Worker, add two Secrets: `ZP_LANDING_ONBOARD_URL` = `https://zp-landing.peaceiam4now.workers.dev/api/onboard`, and `ZP_LANDING_WEBHOOK_SECRET` = the same value as `WEBHOOK_SECRET` on the `zp-landing` Worker.
+2. In Stripe, make sure only this portal listens for `invoice.paid`. zp-landing's own Stripe endpoint must be removed, or every payment onboards twice.
+
+What it sends: `event_id` (the project id, so a retry resumes the same run), `company_name`, `contact_name`, `contact_email` (the approver from the form, or the invoice email) and `scope_tier` (`TIER_1` to `TIER_3`). Any 2xx answer counts as done. A 500, 409 or 401 is retried by the hourly cron job. The audit log shows `landing.synced`, `landing.skipped` or `followup.failed`.
+
+This needs the `landing_synced_at` column: run `npm run db:migrate:remote` once before this code goes live.
+
+### 8. Jira (optional)
 1. Create an API token at id.atlassian.com → Security → API tokens.
 2. In `wrangler.toml`, set `JIRA_DOMAIN` (like `zinkpress.atlassian.net`) and `JIRA_PROJECT_KEY` (like `ZP`), then push.
 3. In Cloudflare, add Secrets `JIRA_EMAIL` (your Atlassian login) and `JIRA_API_TOKEN`.
 4. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
 
-### 8. Optional extras
+### 9. Optional extras
 - A Secret named `GITHUB_TOKEN` holding a fine-grained GitHub token with no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
 - A nicer address like `intake.yourdomain.com`: on the Worker's page, **Settings → Domains & Routes → Add → Custom domain**. Then set `PORTAL_URL` in `wrangler.toml` to that address and push, so emailed links use it.
 
@@ -157,4 +171,4 @@ SECRETS_ENCRYPTION_KEY="your encryption key" node scripts/reveal-secrets.mjs ZP-
 
 ## Tests
 
-`npm test` runs 59 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.
+`npm test` runs 69 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.

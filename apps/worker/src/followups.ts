@@ -1,12 +1,14 @@
 import type { IntakePayload } from "@zinkpress/shared";
 import { audit, nowIso, parseJson, type SessionRow } from "./db";
 import { kickoffReceiptEmail, sendEmail } from "./email";
-import { jiraConfigured, resendConfigured, type Env } from "./env";
+import { jiraConfigured, landingConfigured, resendConfigured, type Env } from "./env";
+import { syncToLanding } from "./landing";
 import { provisionJiraSprint } from "./jira";
 import { calculateSprintSchedule, DEFAULT_TIMEZONE, parseHolidays } from "./schedule";
 
 /**
- * Work that happens after the clock starts: Jira epic and the kickoff receipt email.
+ * Work that happens after the clock starts: Jira epic, the kickoff receipt email, and handing
+ * the client to zp-landing (Drive, Airtable, HubSpot, welcome email, Slack).
  * Each part checks its own "done" column first, so running this twice is harmless.
  * It runs right after submit (in the background) and again from the cron job
  * for anything that failed, until it succeeds.
@@ -66,7 +68,7 @@ export async function runPostSubmit(
 
   if (!row.receipt_sent_at) {
     if (!resendConfigured(env)) {
-      if (logSkips) await audit(env.DB, row, "receipt.skipped", "RESEND_API_KEY is not set yet");
+      if (logSkips) await audit(env.DB, row, "receipt.skipped", "RESEND_API_KEY or RECEIPT_FROM_EMAIL is not set yet");
     } else {
       try {
         const mail = kickoffReceiptEmail(env, {
@@ -85,6 +87,22 @@ export async function runPostSubmit(
         await audit(env.DB, row, "receipt.sent", { to });
       } catch (err) {
         errors.push(`receipt: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  if (!row.landing_synced_at) {
+    if (!landingConfigured(env)) {
+      if (logSkips) await audit(env.DB, row, "landing.skipped", "ZP_LANDING_ONBOARD_URL or ZP_LANDING_WEBHOOK_SECRET is not set yet");
+    } else {
+      try {
+        const result = await syncToLanding(env, row, fetchImpl);
+        await env.DB.prepare("UPDATE onboarding_sessions SET landing_synced_at = ?, updated_at = ? WHERE id = ?")
+          .bind(nowIso(), nowIso(), row.id)
+          .run();
+        await audit(env.DB, row, "landing.synced", { status: result.status, partial: result.partial, body: result.body });
+      } catch (err) {
+        errors.push(`landing: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -117,10 +135,10 @@ export async function runScheduled(env: Env, fetchImpl: typeof fetch = fetch) {
     .bind(now, now)
     .run();
 
-  // 3. Retry Jira/receipt for anything that failed earlier.
+  // 3. Retry Jira/receipt/zp-landing for anything that failed earlier.
   const pending = await env.DB.prepare(
     `SELECT id FROM onboarding_sessions
-     WHERE status = 'CLOCK_RUNNING' AND (jira_synced_at IS NULL OR receipt_sent_at IS NULL)
+     WHERE status = 'CLOCK_RUNNING' AND (jira_synced_at IS NULL OR receipt_sent_at IS NULL OR landing_synced_at IS NULL)
      ORDER BY submitted_at LIMIT 10`,
   ).all<{ id: string }>();
   for (const r of pending.results ?? []) await runPostSubmit(env, r.id, fetchImpl, { logSkips: false });

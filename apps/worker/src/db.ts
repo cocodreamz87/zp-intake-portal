@@ -30,6 +30,7 @@ export interface SessionRow {
   jira_epic_key: string | null;
   jira_synced_at: string | null;
   receipt_sent_at: string | null;
+  landing_synced_at: string | null;
   last_error: string | null;
   launched_at: string | null;
   secrets_purge_after: string | null;

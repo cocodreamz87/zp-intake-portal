@@ -41,7 +41,7 @@ BUSINESS_TIMEZONE = "America/New_York"           # Eastern time; follows dayligh
 HOLIDAYS = "2026-01-01,2026-01-19,2026-02-16,2026-05-25,2026-06-19,2026-07-03,2026-09-07,2026-10-12,2026-11-11,2026-11-26,2026-11-27,2026-12-25,2027-01-01,2027-01-18,2027-02-15,2027-05-31,2027-06-18,2027-07-05,2027-09-06,2027-10-11,2027-11-11,2027-11-25,2027-11-26,2027-12-24,2027-12-31"
 TOKEN_TTL_DAYS = "14"                            # how long a client's intake link works
 SECRETS_PURGE_DAYS = "7"                         # wipe client API keys this many days after launch
-RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender; leave empty to use AGENCY_EMAIL
+RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender. Empty = no emails at all (Resend rejects the Proton AGENCY_EMAIL)
 STAGING_URL_TEMPLATE = ""                        # e.g. "https://{project}.pages.dev" (optional)
 CLOUDFLARE_HELP_URL = "https://developers.cloudflare.com/fundamentals/manage-members/manage/"
 JIRA_DOMAIN = ""                                 # e.g. "zinkpress.atlassian.net" (leave empty to skip Jira)
@@ -58,3 +58,7 @@ JIRA_TASK_TYPE = "Task"
 #   JIRA_EMAIL              your Atlassian login email (optional)
 #   JIRA_API_TOKEN          from id.atlassian.com (optional)
 #   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)
+#   ZP_LANDING_ONBOARD_URL     https://zp-landing.peaceiam4now.workers.dev/api/onboard (optional; empty = skip the hand-off)
+#   ZP_LANDING_WEBHOOK_SECRET  the same value as WEBHOOK_SECRET on the zp-landing Worker
+# After a submit, the intake portal posts the client to zp-landing (Drive, Airtable, HubSpot,
+# welcome email, Slack). The hourly cron retries until zp-landing answers 2xx.
