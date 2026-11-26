@@ -16,6 +16,7 @@ run_worker_first = ["/api/*"]
 
 # Housekeeping every hour: wipe client API keys after their purge date,
 # expire old links, retry Jira/receipt emails that failed.
+# The 8:17 AM Eastern run also posts the morning workload check to #sprint-ops.
 [triggers]
 crons = ["17 * * * *"]
 
@@ -34,10 +35,15 @@ AGENCY_NAME = "ZinkPress"
 AGENCY_EMAIL = "ZinkPress@proton.me"            # the email clients invite as admin (registrar, Cloudflare)
 PORTAL_URL = ""                                  # leave empty: links use this Worker's own address. Set it once you add a custom domain.
 BUSINESS_TIMEZONE = "America/New_York"           # Eastern time; follows daylight saving on its own
-HOLIDAYS = "2026-11-26,2026-12-25,2027-01-01,2027-05-31,2027-07-05,2027-09-06,2027-11-25,2027-12-24"  # example: US holidays that land on weekdays. Edit to your own days off.
+# Days the sprint clock skips, on top of every Saturday and Sunday: US federal holidays
+# on their observed weekday (a Saturday holiday moves to Friday, a Sunday one to Monday),
+# plus the Friday after Thanksgiving so that week is a 4-day weekend. 2026 and 2027.
+# Delete a date to work it; add your own days off. Add 2028 before the end of 2027.
+HOLIDAYS = "2026-01-01,2026-01-19,2026-02-16,2026-05-25,2026-06-19,2026-07-03,2026-09-07,2026-10-12,2026-11-11,2026-11-26,2026-11-27,2026-12-25,2027-01-01,2027-01-18,2027-02-15,2027-05-31,2027-06-18,2027-07-05,2027-09-06,2027-10-11,2027-11-11,2027-11-25,2027-11-26,2027-12-24,2027-12-31"
+SLACK_CONTRACT_APPROVERS = ""                     # Slack member ids (U0123ABC,...) allowed to click Approve & Send. Empty = anyone in #contract-approvals
 TOKEN_TTL_DAYS = "14"                            # how long a client's intake link works
 SECRETS_PURGE_DAYS = "7"                         # wipe client API keys this many days after launch
-RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender; leave empty to use AGENCY_EMAIL
+RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender. Empty = no emails at all (Resend rejects the Proton AGENCY_EMAIL)
 STAGING_URL_TEMPLATE = ""                        # e.g. "https://{project}.pages.dev" (optional)
 CLOUDFLARE_HELP_URL = "https://developers.cloudflare.com/fundamentals/manage-members/manage/"
 JIRA_DOMAIN = ""                                 # e.g. "zinkpress.atlassian.net" (leave empty to skip Jira)
@@ -54,3 +60,25 @@ JIRA_TASK_TYPE = "Task"
 #   JIRA_EMAIL              your Atlassian login email (optional)
 #   JIRA_API_TOKEN          from id.atlassian.com (optional)
 #   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)
+#   ZP_LANDING_ONBOARD_URL     https://zp-landing.peaceiam4now.workers.dev/api/onboard (optional; empty = skip the hand-off)
+#   ZP_LANDING_WEBHOOK_SECRET  the same value as WEBHOOK_SECRET on the zp-landing Worker
+# After a submit, the intake portal posts the client to zp-landing (Drive, Airtable, HubSpot,
+# welcome email, Slack). The hourly cron retries until zp-landing answers 2xx.
+#
+# Slack alerts (all optional; each one is skipped until its URL is set).
+# Each value is a Slack Incoming Webhook URL (https://hooks.slack.com/services/...).
+#   SLACK_WEBHOOK_REVENUE     #pipeline-revenue   invoice paid
+#   SLACK_WEBHOOK_SPRINT_OPS  #sprint-ops         sprint clock started, Jira epic ready, 8 AM workload check
+#   SLACK_WEBHOOK_APPROVALS   #staging-approvals  reserved for staging approvals (nothing posts here yet)
+#   SLACK_WEBHOOK_ERRORS      #worker-errors      any failed outside API call (Stripe, PandaDoc, Resend, Jira, zp-landing),
+#                                                 any 500, cards blocked on $500+ invoices (6-hour de-dupe)
+#   SLACK_WEBHOOK_CONTRACTS   #contract-approvals PandaDoc draft ready, with the Approve & Send Contract button
+#   SLACK_SIGNING_SECRET      Slack app > Basic Information > Signing Secret (checks every button click)
+#
+# Payments and contracts:
+#   STRIPE_SECRET_KEY         restricted key (rk_test_... while testing): Invoices + Customers write,
+#                             PaymentIntents + Charges read. Needed for the $500+ bank-only check; without it
+#                             a $500+ invoice.paid is held (503) and Stripe retries until it's set.
+#   PANDADOC_API_KEY          PandaDoc > Settings > Integrations > API (sandbox key while testing)
+#   PANDADOC_TEMPLATE_ID      the MSA/SOW template id (template_uuid)
+#   PANDADOC_WEBHOOK_KEY      PandaDoc > Settings > Webhooks > shared key

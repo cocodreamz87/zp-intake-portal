@@ -2,3 +2,16 @@
 SECRETS_ENCRYPTION_KEY=any-long-random-password-at-least-32-characters
 ADMIN_API_TOKEN=another-long-random-password-at-least-32-characters
 STRIPE_WEBHOOK_SECRET=whsec_local_test_only
+# Optional: Slack Incoming Webhook addresses. Leave unset locally unless you want real posts.
+# SLACK_WEBHOOK_REVENUE=
+# SLACK_WEBHOOK_SPRINT_OPS=
+# SLACK_WEBHOOK_APPROVALS=
+# SLACK_WEBHOOK_ERRORS=
+# SLACK_WEBHOOK_CONTRACTS=
+# SLACK_SIGNING_SECRET=
+# Optional: Stripe restricted test key (rk_test_...) for the $500+ bank-only check and POST /api/admin/invoices.
+# STRIPE_SECRET_KEY=
+# Optional: PandaDoc sandbox. Leave unset to skip contracts.
+# PANDADOC_API_KEY=
+# PANDADOC_TEMPLATE_ID=
+# PANDADOC_WEBHOOK_KEY=

@@ -254,6 +254,31 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .receipt dt { color: var(--zp-ink-gray); font-family: var(--zp-font-mono); font-size: 0.82rem; align-self: center; }
 .receipt dd { margin: 0; font-weight: 600; }
 
+.subhead { font-size: 1.05rem; margin: 1.5rem 0 0.25rem; }
+
+/* /review page (staging walkthrough) */
+.video {
+  position: relative;
+  padding-top: 56.25%;
+  border-radius: var(--zp-radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--zp-zinc-light);
+  background: var(--zp-obsidian);
+  margin: 1rem 0;
+}
+.video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.notes {
+  white-space: pre-wrap;
+  background: var(--zp-obsidian);
+  border: 1px solid var(--zp-zinc-light);
+  border-radius: var(--zp-radius-lg);
+  padding: 0.9rem 1.1rem;
+  margin: 0.5rem 0 1.25rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.staging-link { display: inline-block; margin: 0.25rem 0 1.25rem; font-family: var(--zp-font-display); font-weight: 600; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
   .primary:not(:disabled):hover { transform: none; }

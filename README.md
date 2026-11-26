@@ -1,6 +1,6 @@
 # ZinkPress Intake Portal
 
-**No Credentials, No Clock.** A client pays a Stripe invoice, gets a private link, and fills in a 4-step form. The delivery clock starts only when every answer checks out. Then the portal opens a Jira epic with tasks and emails the client a kickoff receipt. No kickoff call needed.
+**No Credentials, No Clock.** A client pays a Stripe invoice, gets a private link, and fills in a 4-step form. The delivery clock starts only when every answer checks out. Then the portal opens a Jira epic with tasks, emails the client a kickoff receipt, and hands the client to zp-landing, which builds their Drive folder, Airtable and HubSpot records, welcome email and Slack alerts. No kickoff call needed.
 
 ```
 Stripe invoice.paid ──► zp-intake-portal Worker ──► D1 (session, status, audit log)
@@ -9,8 +9,12 @@ Stripe invoice.paid ──► zp-intake-portal Worker ──► D1 (session, sta
                                     │
 Client ──► intake form (same Worker) ──► submit ──► clock starts
                                               ├──► Jira epic + tasks
-                                              └──► kickoff receipt email
+                                              ├──► kickoff receipt email
+                                              └──► zp-landing POST /api/onboard
+                                                   (Drive, Airtable, HubSpot, welcome email, Slack)
 ```
+
+Every API this Worker serves and every service it calls is documented in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 One Cloudflare Worker does everything: `/api/...` addresses run the API, and every other address shows the intake form.
 
@@ -27,20 +31,20 @@ One Cloudflare Worker does everything: `/api/...` addresses run the API, and eve
 
 - **Time zone:** Eastern (`America/New_York`). It follows daylight saving on its own, so it's EST in winter and EDT in summer. To change it, edit `BUSINESS_TIMEZONE` in `wrangler.toml` (in the repo's top folder). That one setting drives everything.
 - **Kickoff:** the next 9:00 AM Eastern on a business day, at or after the moment the client submits. Submit Tuesday 7:30 AM, kickoff is Tuesday 9:00 AM. Submit Tuesday 9:05 AM or Friday night, kickoff is the next business morning.
-- **Business days:** Monday to Friday, minus the dates in `HOLIDAYS` (edit that list to your own days off).
-- **Deadlines:** Tier 1 = 2 business days (the "48 hours"), Tier 2 = 5 business days, Tier 3 = 10 business days, each landing at 9:00 AM Eastern.
+- **Business days:** Monday to Friday, minus the dates in `HOLIDAYS` in `wrangler.toml`. That list holds every US federal holiday for 2026 and 2027 on its observed weekday, plus the Friday after Thanksgiving, so Thanksgiving week is a 4-day weekend. Kickoff and the deadline never land on a weekend or a listed date. Delete a date to work it, add your own days off, and add 2028 before the end of 2027.
+- **Deadlines:** Tier 1 = 5 business days (one working week), Tier 2 = 10 business days (the top of the 7 to 10 days sold), Tier 3 = 20 business days (the top of the 3 to 4 weeks sold), each landing at 9:00 AM Eastern.
 
 ## What's different from the pasted spec (and why)
 
 1. **Deadline used the wrong clock.** Workers run in UTC, so `setHours(9)` meant 9 AM in London (4 or 5 AM in Atlanta), and the weekday check read the UTC day, so Friday evening in Atlanta counted as Saturday. The new code does all math in Eastern time. Tests cover daylight saving in March and November.
 2. **Deadline always added a day.** Submitting at 7 AM on a Tuesday pushed kickoff to Wednesday. Now a business-day morning before 9 AM kicks off that same morning.
-3. **"48 hours" vs "2 business days".** I chose 2 business days, so a Thursday kickoff is due Monday 9 AM instead of Saturday 9 AM. That keeps your weekends free, which was the stated goal. If you'd rather promise true 48 clock hours, it's one line in `apps/worker/src/schedule.ts`.
+3. **Deadlines count business days, not clock hours.** Weekends and the dates in `HOLIDAYS` never count, so a Thursday kickoff never comes due on a Saturday. That keeps your weekends free, which was the stated goal. The day count for each tier is one line in `apps/worker/src/schedule.ts`.
 4. **R2 presigned URLs.** Those need separate S3-style access keys that the spec never set up. Uploads now go through the Worker straight into R2 using the built-in binding, so there are no extra keys, and the Worker checks the actual file bytes first (real PNG, at least 1000px wide, transparent; real SVG with no scripts; real EPS).
 5. **The link token was just the row id.** Now it's 256 random bits that can't be guessed. Only its hash is stored. It expires after 14 days (`TOKEN_TTL_DAYS`), is removed from the address bar as soon as the page loads, and is sent in a header, not in the URL path. You can reissue a fresh link anytime.
 6. **Zod `errorMap` syntax.** `z.literal(true, { errorMap })` breaks between Zod versions. Checkboxes now use a plain `refine`, which works on Zod 3 and 4.
 7. **Secrets textarea accepted anything.** There's no raw JSON box anymore. The wizard shows one password field per key your contract needs (from the invoice's `integrations` metadata), plus "Add another key" rows. Names must be `CAPITAL_SNAKE_CASE`, checked on both sides.
 8. **No Stripe signature check.** Anyone who found the webhook URL could fake a paid invoice. The Worker now verifies `Stripe-Signature` (HMAC-SHA256), rejects events older than 5 minutes, and ignores repeat deliveries of the same event.
-9. **Jira could double the epic on a retry.** Every issue gets a project label. A retry finds the existing epic (saved in D1 or found by label) and creates only the missing tasks. Failed Jira or email work is retried by the hourly cron job.
+9. **Jira could double the epic on a retry.** Every issue gets a project label. A retry finds the existing epic (saved in D1 or found by label) and creates only the missing tasks. Failed Jira, email or zp-landing work is retried by the hourly cron job.
 10. **GitHub check was only a length check.** It now uses GitHub's real name rules, then asks GitHub's API whether the account exists. If GitHub is down, the client can still submit and the row is marked unverified for you.
 11. **Secrets purge wasn't built.** When you mark a project launched, the encrypted keys are wiped 7 days later (`SECRETS_PURGE_DAYS`) by the cron job.
 12. **One Worker instead of Pages + Worker.** The form and the API ship together as one Cloudflare Worker, so Cloudflare can build and deploy it from GitHub on every push, there's no cross-site setup, and client links use the Worker's own address automatically.
@@ -124,14 +128,52 @@ From now on, every push to the `main` branch on GitHub redeploys the portal on i
 Resend only sends from a domain you own and verify. A Proton address can't be the sender.
 - **Until you have a domain:** skip this. Make links with the admin command below and send them from your Proton email yourself.
 - **Once you have a domain:** verify it in Resend, create an API key, and add it in Cloudflare as a Secret named `RESEND_API_KEY`. In `wrangler.toml`, set `RECEIPT_FROM_EMAIL` to something like `intake@yourdomain.com` and push. `AGENCY_EMAIL` stays as the reply-to.
+- Nothing is emailed until **both** `RESEND_API_KEY` and `RECEIPT_FROM_EMAIL` are set. The portal never sends from `AGENCY_EMAIL`.
 
-### 7. Jira (optional)
+### 7. Hand clients to zp-landing
+zp-landing is the home of onboarding. This portal only collects the intake, then calls zp-landing once per client.
+1. In Cloudflare, on the `zp-intake-portal` Worker, add two Secrets: `ZP_LANDING_ONBOARD_URL` = `https://zp-landing.peaceiam4now.workers.dev/api/onboard`, and `ZP_LANDING_WEBHOOK_SECRET` = the same value as `WEBHOOK_SECRET` on the `zp-landing` Worker.
+2. In Stripe, make sure only this portal listens for `invoice.paid`. zp-landing's own Stripe endpoint must be removed, or every payment onboards twice.
+
+What it sends: `event_id` (the project id, so a retry resumes the same run), `company_name`, `contact_name`, `contact_email` (the approver from the form, or the invoice email) and `scope_tier` (`TIER_1` to `TIER_3`). Any 2xx answer counts as done. A 500, 409 or 401 is retried by the hourly cron job. The audit log shows `landing.synced`, `landing.skipped` or `followup.failed`.
+
+This needs the `landing_synced_at` column: run `npm run db:migrate:remote` once before this code goes live.
+
+### 8. Jira (optional)
 1. Create an API token at id.atlassian.com → Security → API tokens.
 2. In `wrangler.toml`, set `JIRA_DOMAIN` (like `zinkpress.atlassian.net`) and `JIRA_PROJECT_KEY` (like `ZP`), then push.
 3. In Cloudflare, add Secrets `JIRA_EMAIL` (your Atlassian login) and `JIRA_API_TOKEN`.
 4. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
 
-### 8. Optional extras
+### 9. Slack alerts (optional)
+The Worker can post to four channels in your ZinkPress Slack. Each alert is skipped until its webhook address is added, and a Slack problem never breaks a Stripe webhook or a client's submit.
+
+| Channel | Secret | What posts there |
+|---|---|---|
+| #pipeline-revenue | `SLACK_WEBHOOK_REVENUE` | Invoice paid: client, project, tier, the real amount from Stripe, whether the intake link was emailed. |
+| #sprint-ops | `SLACK_WEBHOOK_SPRINT_OPS` | Sprint clock started (kickoff and staging deadline in Eastern time), Jira epic ready (with a button), and an 8:17 AM check: a heads-up when 2 or more sprints are running, and a list of clients who've had their link over 48 hours without submitting. |
+| #staging-approvals | `SLACK_WEBHOOK_APPROVALS` | Nothing yet. Saved for the approve-staging buttons, which need a separate Slack app. |
+| #worker-errors | `SLACK_WEBHOOK_ERRORS` | Any 500 error (route plus the first lines of the error), and Jira or receipt follow-ups that fail (once per new error, not every hourly retry). |
+
+Slack messages never include a client's intake link or their API keys.
+
+Set it up:
+1. Go to https://api.slack.com/apps, click **Create New App** → **From scratch**, name it "ZinkPress Alerts", and pick the ZinkPress workspace.
+2. Open **Incoming Webhooks**, turn it on, click **Add New Webhook to Workspace**, pick `#pipeline-revenue`, and click **Allow**. Copy the address it shows (starts with `https://hooks.slack.com/`).
+3. Repeat step 2 for `#sprint-ops`, `#staging-approvals` and `#worker-errors`. Each channel gets its own address.
+4. In Cloudflare, add four Secrets (same way as step 4), each holding the matching address: `SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRINT_OPS`, `SLACK_WEBHOOK_APPROVALS`, `SLACK_WEBHOOK_ERRORS`.
+5. Treat these addresses like passwords: anyone who has one can post to that channel.
+
+### 10. $500+ bank-only payments, contracts and launch sign-off
+Full details (every route, call and secret) are in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md). In short:
+
+1. **Database first.** Run `npm run db:migrate:remote` once before this code goes live. It applies `0003_contracts_review_kyb.sql`, which rebuilds the sessions table to add the `IN_REVIEW` status and the payment, KYB, contract and review columns (every existing row and value is kept).
+2. **Stripe key.** Add Secret `STRIPE_SECRET_KEY`: a restricted key with Invoices and Customers write, PaymentIntents and Charges read. Without it, a paid invoice of $500 or more is held (Stripe retries) because the Worker can't confirm it was paid by bank transfer. In Stripe, turn on **ACH Direct Debit** and **Bank transfers** under Settings → Payment methods. Make invoices with `POST /api/admin/invoices`: at $500+ they only offer ACH and bank transfer.
+3. **PandaDoc.** Add the tokens `Client.CompanyName`, `Client.ContactName`, `Client.Email`, `Project.ID`, `Project.Tier`, `Project.DeliveryBusinessDays`, `Project.Amount`, `Project.StartDate` and a recipient role `Client` to your MSA/SOW template. Add Secrets `PANDADOC_API_KEY`, `PANDADOC_TEMPLATE_ID`, `PANDADOC_WEBHOOK_KEY`. In PandaDoc → Settings → Webhooks, point "Document state changed" at `<portal>/api/pandadoc/webhook`.
+4. **Slack button.** Add an incoming webhook for `#contract-approvals` as `SLACK_WEBHOOK_CONTRACTS`. In the same Slack app, turn on **Interactivity & Shortcuts** with Request URL `<portal>/api/slack/interactions`, and add its **Signing Secret** as `SLACK_SIGNING_SECRET`.
+5. **Staging review.** When staging is ready, call `POST /api/admin/sessions/<project>/ready-for-review` with `stagingUrl`, `loomUrl` and `releaseNotes`. The client gets `/review?token=…`, watches the Loom, opens staging and clicks **Approve & Launch to Production**.
+
+### 11. Optional extras
 - A Secret named `GITHUB_TOKEN` holding a fine-grained GitHub token with no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
 - A nicer address like `intake.yourdomain.com`: on the Worker's page, **Settings → Domains & Routes → Add → Custom domain**. Then set `PORTAL_URL` in `wrangler.toml` to that address and push, so emailed links use it.
 
@@ -157,4 +199,4 @@ SECRETS_ENCRYPTION_KEY="your encryption key" node scripts/reveal-secrets.mjs ZP-
 
 ## Tests
 
-`npm test` runs 59 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.
+`npm test` runs 69 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.

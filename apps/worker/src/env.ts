@@ -22,6 +22,8 @@ export interface Env {
   JIRA_PROJECT_KEY?: string;
   JIRA_EPIC_TYPE?: string;
   JIRA_TASK_TYPE?: string;
+  /** zp-landing's onboarding endpoint, e.g. https://zp-landing.peaceiam4now.workers.dev/api/onboard. Empty = skip. */
+  ZP_LANDING_ONBOARD_URL?: string;
 
   // Secrets (Cloudflare dashboard: Settings > Variables and Secrets, type Secret)
   STRIPE_WEBHOOK_SECRET?: string;
@@ -31,6 +33,30 @@ export interface Env {
   JIRA_API_TOKEN?: string;
   RESEND_API_KEY?: string;
   GITHUB_TOKEN?: string;
+  /** Same value as WEBHOOK_SECRET on zp-landing. */
+  ZP_LANDING_WEBHOOK_SECRET?: string;
+
+  // Slack Incoming Webhook URLs, one per channel (optional; each alert is
+  // skipped quietly when its URL isn't set). The URL itself is the secret.
+  SLACK_WEBHOOK_REVENUE?: string; // #pipeline-revenue
+  SLACK_WEBHOOK_SPRINT_OPS?: string; // #sprint-ops
+  SLACK_WEBHOOK_APPROVALS?: string; // #staging-approvals
+  SLACK_WEBHOOK_ERRORS?: string; // #worker-errors
+  SLACK_WEBHOOK_CONTRACTS?: string; // #contract-approvals (the Approve & Send button)
+  /** Slack app > Basic Information > Signing Secret. Checks every button click. */
+  SLACK_SIGNING_SECRET?: string;
+
+  /** Restricted key (rk_test_... while testing): Invoices + Customers write, PaymentIntents + Charges read. */
+  STRIPE_SECRET_KEY?: string;
+
+  // PandaDoc contracts
+  PANDADOC_API_KEY?: string;
+  /** The MSA/SOW template's id (template_uuid). Plain var or secret. */
+  PANDADOC_TEMPLATE_ID?: string;
+  /** PandaDoc Settings > Webhooks > shared key. */
+  PANDADOC_WEBHOOK_KEY?: string;
+  /** Optional var: comma list of Slack member ids (U0123...) allowed to approve contracts. Empty = anyone in the channel. */
+  SLACK_CONTRACT_APPROVERS?: string;
 }
 
 export function numberVar(v: string | undefined, fallback: number): number {
@@ -42,6 +68,14 @@ export function jiraConfigured(env: Env): boolean {
   return Boolean(env.JIRA_DOMAIN && env.JIRA_PROJECT_KEY && env.JIRA_EMAIL && env.JIRA_API_TOKEN);
 }
 
+/**
+ * Email goes out only with a Resend key AND a Resend-verified sender. AGENCY_EMAIL is never used
+ * as the sender: it is a Proton address, which Resend rejects, so every send would fail and retry.
+ */
 export function resendConfigured(env: Env): boolean {
-  return Boolean(env.RESEND_API_KEY && (env.RECEIPT_FROM_EMAIL || env.AGENCY_EMAIL));
+  return Boolean(env.RESEND_API_KEY && env.RECEIPT_FROM_EMAIL);
+}
+
+export function landingConfigured(env: Env): boolean {
+  return Boolean(env.ZP_LANDING_ONBOARD_URL && env.ZP_LANDING_WEBHOOK_SECRET);
 }

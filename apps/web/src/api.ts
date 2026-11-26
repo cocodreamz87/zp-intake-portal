@@ -1,4 +1,4 @@
-import type { SessionView, SubmitResult } from "@zinkpress/shared";
+import type { ApproveResult, ReviewView, SessionView, SubmitResult } from "@zinkpress/shared";
 
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") ?? "";
 
@@ -39,6 +39,13 @@ export const api = {
       body: fd,
     });
   },
+  review: (token: string) => call<ReviewView>(token, "/api/review"),
+  approve: (token: string, body: { confirmed: boolean; signerName: string }) =>
+    call<ApproveResult>(token, "/api/review/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   submit: (token: string, payload: unknown) =>
     call<SubmitResult>(token, "/api/onboarding/submit", {
       method: "POST",

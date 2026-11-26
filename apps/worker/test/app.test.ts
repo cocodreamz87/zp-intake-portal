@@ -14,6 +14,10 @@ let r2: ReturnType<typeof fakeR2>;
 let jira: ReturnType<typeof fakeJira>;
 let emails: Array<{ to: string[]; subject: string; text: string; key: string | null }>;
 let pending: Promise<unknown>[];
+let landingCalls: Array<{ body: any; secret: string | null }>;
+let landingRespond: () => Response;
+let slack: Array<{ url: string; body: any }>;
+let slackStatus: number;
 
 const ctx = () =>
   ({ waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException() {}, props: {} }) as unknown as ExecutionContext;
@@ -84,6 +88,8 @@ function goodPayload(logoKey: string) {
     adminEmails: ["owner@acme.com"],
     spocName: "Jordan Lee",
     spocEmail: "Jordan@Acme.com",
+    legalBusinessName: "Acme Barbers LLC",
+    einOrRegistration: "12-3456789",
   };
 }
 
@@ -92,6 +98,10 @@ beforeEach(() => {
   jira = fakeJira();
   emails = [];
   pending = [];
+  landingCalls = [];
+  landingRespond = () => Response.json({ ok: true, client_record_id: "rec1" });
+  slack = [];
+  slackStatus = 200;
   env = {
     DB: fakeD1(),
     ASSETS_BUCKET: r2.bucket,
@@ -126,6 +136,14 @@ beforeEach(() => {
         : Response.json({ login: name, type: "Organization" });
     }
     if (url.includes(".atlassian.net/")) return jira.handle(url, init);
+    if (url === "https://landing.test/api/onboard") {
+      landingCalls.push({ body: JSON.parse(String(init.body)), secret: new Headers(init.headers).get("X-Webhook-Secret") });
+      return landingRespond();
+    }
+    if (url.startsWith("https://hooks.slack.com/")) {
+      slack.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(slackStatus === 200 ? "ok" : "server_error", { status: slackStatus });
+    }
     throw new Error(`unexpected outbound call in test: ${url}`);
   }) as typeof fetch);
 });
@@ -354,5 +372,259 @@ describe("admin and housekeeping", () => {
     expect(good.headers.get("Access-Control-Allow-Origin")).toBe("https://intake.test");
     const evil = await req("/api/health", { headers: { Origin: "https://evil.test" } });
     expect(evil.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});
+
+describe("hand-off to zp-landing", () => {
+  let token: string;
+  const submit = async () => {
+    const { json } = await uploadLogo(token, fakePng(1600, 6));
+    const r = await req("/api/onboarding/submit", {
+      method: "POST",
+      headers: { ...auth(token), "Content-Type": "application/json" },
+      body: JSON.stringify(goodPayload(json.key)),
+    });
+    await Promise.all(pending);
+    return r;
+  };
+  const events = async () =>
+    (await env.DB.prepare("SELECT event FROM audit_log ORDER BY id").all<{ event: string }>()).results!.map((r) => r.event);
+
+  const landingFetch = (async (u: string, i: RequestInit) => {
+    if (u !== "https://landing.test/api/onboard") throw new Error(`unexpected cron call: ${u}`);
+    landingCalls.push({ body: JSON.parse(String(i.body)), secret: new Headers(i.headers).get("X-Webhook-Secret") });
+    return landingRespond();
+  }) as unknown as typeof fetch;
+
+  beforeEach(async () => {
+    await stripe(paidInvoice());
+    token = tokenFromLastEmail();
+  });
+
+  it("skips cleanly when the zp-landing settings are empty", async () => {
+    expect((await submit()).status).toBe(200);
+    expect(landingCalls).toHaveLength(0);
+    expect(await events()).toContain("landing.skipped");
+    const row: any = await env.DB.prepare("SELECT landing_synced_at, last_error FROM onboarding_sessions").first();
+    expect(row.landing_synced_at).toBeNull();
+    expect(row.last_error).toBeNull();
+  });
+
+  it("posts the client once after submit, with the secret header and project_id as event_id", async () => {
+    env.ZP_LANDING_ONBOARD_URL = "https://landing.test/api/onboard";
+    env.ZP_LANDING_WEBHOOK_SECRET = "landing-secret";
+    await submit();
+    expect(landingCalls).toHaveLength(1);
+    expect(landingCalls[0].secret).toBe("landing-secret");
+    expect(landingCalls[0].body).toEqual({
+      event_id: "ZP-2026-014",
+      company_name: "Acme Barbers",
+      contact_name: "Jordan Lee",
+      contact_email: "jordan@acme.com",
+      scope_tier: "TIER_2",
+    });
+    const row: any = await env.DB.prepare("SELECT landing_synced_at FROM onboarding_sessions").first();
+    expect(row.landing_synced_at).toBeTruthy();
+    expect(await events()).toContain("landing.synced");
+
+    // The cron job does not send it again.
+    await runScheduled(env, landingFetch);
+    expect(landingCalls).toHaveLength(1);
+  });
+
+  it("retries from the hourly cron when zp-landing returns a 500", async () => {
+    env.ZP_LANDING_ONBOARD_URL = "https://landing.test/api/onboard";
+    env.ZP_LANDING_WEBHOOK_SECRET = "landing-secret";
+    landingRespond = () => Response.json({ ok: false, failed_step: "drive" }, { status: 500 });
+    await submit();
+    let row: any = await env.DB.prepare("SELECT landing_synced_at, last_error FROM onboarding_sessions").first();
+    expect(row.landing_synced_at).toBeNull();
+    expect(row.last_error).toMatch(/zp-landing onboard failed \(500\)/);
+    expect(await events()).toContain("followup.failed");
+
+    landingRespond = () => Response.json({ ok: true, status: "partial", retryable_steps: ["hubspot"] });
+    await runScheduled(env, landingFetch);
+    row = await env.DB.prepare("SELECT landing_synced_at, last_error FROM onboarding_sessions").first();
+    expect(landingCalls).toHaveLength(2);
+    expect(landingCalls[1].body.event_id).toBe("ZP-2026-014"); // same id, so zp-landing resumes its run
+    expect(row.landing_synced_at).toBeTruthy();
+    expect(row.last_error).toBeNull();
+  });
+});
+
+describe("Resend sender guard", () => {
+  it("sends nothing when RECEIPT_FROM_EMAIL is empty, even with a Resend key", async () => {
+    env.RECEIPT_FROM_EMAIL = "";
+    const r = await stripe(paidInvoice());
+    expect(r.status).toBe(200);
+    expect(emails).toHaveLength(0);
+  });
+
+  it("sends from RECEIPT_FROM_EMAIL, never from the Proton AGENCY_EMAIL", async () => {
+    const seen: string[] = [];
+    setOutboundFetch((async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      if (String(input).startsWith("https://api.resend.com/")) seen.push(JSON.parse(String(init.body)).from);
+      return Response.json({ id: "email_1" });
+    }) as typeof fetch);
+    await stripe(paidInvoice());
+    expect(seen).toEqual(["ZinkPress <hello@zinkpress.test>"]);
+  });
+});
+
+describe("Slack alerts", () => {
+  const HOOK = (name: string) => `https://hooks.slack.com/services/T000/B000/${name}`;
+  const posts = (name: string) => slack.filter((p) => p.url === HOOK(name));
+  const allText = (p: { body: any }) => JSON.stringify(p.body);
+
+  beforeEach(() => {
+    env.SLACK_WEBHOOK_REVENUE = HOOK("revenue");
+    env.SLACK_WEBHOOK_SPRINT_OPS = HOOK("sprint");
+    env.SLACK_WEBHOOK_APPROVALS = HOOK("approvals");
+    env.SLACK_WEBHOOK_ERRORS = HOOK("errors");
+  });
+
+  async function paidAndSubmitted() {
+    const inv = paidInvoice();
+    (inv.data.object as any).amount_paid = 150000;
+    (inv.data.object as any).currency = "usd";
+    (inv.data.object as any).charge = { id: "ch_1", payment_method_details: { type: "us_bank_account" } };
+    await stripe(inv);
+    const token = tokenFromLastEmail();
+    const { json } = await uploadLogo(token, fakePng(1600, 6));
+    const r = await req("/api/onboarding/submit", {
+      method: "POST",
+      headers: { ...auth(token), "Content-Type": "application/json" },
+      body: JSON.stringify(goodPayload(json.key)),
+    });
+    await Promise.all(pending);
+    return { token, r };
+  }
+
+  it("posts a paid invoice to #pipeline-revenue once, with the real amount and no intake link", async () => {
+    const inv = paidInvoice();
+    (inv.data.object as any).amount_paid = 150000;
+    (inv.data.object as any).currency = "usd";
+    (inv.data.object as any).charge = { id: "ch_1", payment_method_details: { type: "us_bank_account" } };
+    await stripe(inv);
+    await Promise.all(pending);
+    const token = tokenFromLastEmail();
+
+    expect(posts("revenue")).toHaveLength(1);
+    const msg = posts("revenue")[0].body;
+    expect(msg.text).toBe("💰 Invoice paid: $1,500.00");
+    expect(allText(posts("revenue")[0])).toContain("ZP-2026-014");
+    expect(allText(posts("revenue")[0])).not.toContain(token);
+
+    await stripe(inv); // Stripe re-delivers the same event
+    await Promise.all(pending);
+    expect(posts("revenue")).toHaveLength(1);
+  });
+
+  it("a Slack outage never breaks the Stripe webhook", async () => {
+    slackStatus = 500;
+    const r = await stripe(paidInvoice());
+    await Promise.all(pending);
+    expect(r.status).toBe(200);
+    expect(r.json.session).toBe("created");
+    expect(posts("revenue")).toHaveLength(1);
+  });
+
+  it("posts the sprint clock and the Jira epic link to #sprint-ops", async () => {
+    const { token } = await paidAndSubmitted();
+    const sprint = posts("sprint");
+    expect(sprint.map((p) => p.body.text)).toEqual([
+      "🚀 Sprint clock running: ZP-2026-014",
+      "🗂️ Jira epic ready: ZP-2026-014",
+    ]);
+    const jiraPost = allText(sprint[1]);
+    expect(jiraPost).toContain("https://zinkpress.atlassian.net/browse/ZP-1");
+    expect(allText(sprint[0])).not.toContain(token);
+    expect(allText(sprint[0])).not.toContain("supersecret");
+  });
+
+  it("alerts #worker-errors once when a kickoff follow-up keeps failing", async () => {
+    jira = fakeJira({ failBulkOnce: true });
+    await paidAndSubmitted();
+    // One alert for the failed Jira call itself, one summary for the follow-up job.
+    const texts = posts("errors").map((p) => p.body.text);
+    expect(texts).toHaveLength(2);
+    expect(texts).toContain("🔴 Jira error: POST /rest/api/3/issue/bulk");
+    expect(texts.some((t) => t.includes("Kickoff follow-up failed"))).toBe(true);
+  });
+
+  it("alerts #worker-errors on a 500, and the caller still gets its normal answer", async () => {
+    const realDb = env.DB;
+    env.DB = { prepare: () => { throw new Error("D1 is down"); } } as unknown as D1Database;
+    const r = await req("/api/session", { headers: auth("x".repeat(43)) });
+    env.DB = realDb;
+    await Promise.all(pending);
+    expect(r.status).toBe(500);
+    expect(posts("errors")).toHaveLength(1);
+    expect(posts("errors")[0].body.text).toBe("🔴 zp-intake-portal error: GET /api/session");
+    expect(allText(posts("errors")[0])).toContain("D1 is down");
+  });
+
+  it("skips quietly when no webhook URLs are set", async () => {
+    delete env.SLACK_WEBHOOK_REVENUE;
+    delete env.SLACK_WEBHOOK_SPRINT_OPS;
+    delete env.SLACK_WEBHOOK_ERRORS;
+    await paidAndSubmitted();
+    expect(slack).toHaveLength(0);
+  });
+});
+
+describe("8 AM workload check", () => {
+  const HOOK = "https://hooks.slack.com/services/T000/B000/sprint";
+  // 8:17 AM Eastern on Tue Dec 1 2026 (EST, UTC-5).
+  const at817 = new Date("2026-12-01T13:17:00.000Z");
+  const capture = (async (u: RequestInfo | URL, i: RequestInit = {}) => {
+    slack.push({ url: String(u), body: JSON.parse(String(i.body)) });
+    return new Response("ok");
+  }) as typeof fetch;
+
+  beforeEach(() => {
+    env.SLACK_WEBHOOK_SPRINT_OPS = HOOK;
+  });
+
+  async function addSession(projectId: string, status: string, sinceIso: string) {
+    await env.DB.prepare(
+      `INSERT INTO onboarding_sessions (id, project_id, client_name, client_email, tier, status, token_hash, token_expires_at, intake_email_sent_at, guaranteed_deadline)
+       VALUES (?, ?, ?, ?, 'TIER_1', ?, ?, '2099-01-01T00:00:00.000Z', ?, '2026-12-03T14:00:00.000Z')`,
+    )
+      .bind(crypto.randomUUID(), projectId, `Client ${projectId}`, `${projectId}@x.test`, status, crypto.randomUUID(), sinceIso)
+      .run();
+  }
+
+  it("only runs in the 8 AM Eastern hour, and only once a day", async () => {
+    const { runDailyWorkloadCheck } = await import("../src/workload");
+    await addSession("ZP-A", "CLOCK_RUNNING", "2026-11-30T12:00:00.000Z");
+    await addSession("ZP-B", "CLOCK_RUNNING", "2026-11-30T12:00:00.000Z");
+    await addSession("ZP-C", "AWAITING_CREDENTIALS", "2026-11-28T12:00:00.000Z"); // ~73 hours
+    await addSession("ZP-D", "AWAITING_CREDENTIALS", "2026-12-01T10:00:00.000Z"); // 3 hours, not stalled
+
+    const at9 = new Date("2026-12-01T14:17:00.000Z");
+    expect((await runDailyWorkloadCheck(env, capture, at9)).ran).toBe(false);
+    expect(slack).toHaveLength(0);
+
+    const first = await runDailyWorkloadCheck(env, capture, at817);
+    expect(first).toMatchObject({ ran: true, activeSprints: 2, stalledClients: 1, posted: ["capacity", "stalled"] });
+    expect(slack.map((p) => p.body.text)).toEqual([
+      "⚠️ 2 sprints running at once",
+      "⏳ 1 paid client stuck on the intake form",
+    ]);
+    expect(JSON.stringify(slack[1].body)).toContain("ZP-C");
+    expect(JSON.stringify(slack[1].body)).not.toContain("ZP-D");
+
+    const again = await runDailyWorkloadCheck(env, capture, new Date("2026-12-01T13:40:00.000Z"));
+    expect(again).toMatchObject({ ran: false, reason: "already_posted_today" });
+    expect(slack).toHaveLength(2);
+  });
+
+  it("stays quiet when there's nothing to report", async () => {
+    const { runDailyWorkloadCheck } = await import("../src/workload");
+    await addSession("ZP-A", "CLOCK_RUNNING", "2026-11-30T12:00:00.000Z");
+    const r = await runDailyWorkloadCheck(env, capture, at817);
+    expect(r).toMatchObject({ ran: true, posted: [] });
+    expect(slack).toHaveLength(0);
   });
 });

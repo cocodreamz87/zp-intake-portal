@@ -2,13 +2,16 @@
  * Test stand-ins for Cloudflare D1 and R2, so the full API can be exercised
  * in plain Node with the real SQL migration. Nothing here talks to the network.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 export function fakeD1(): D1Database {
   const db = new DatabaseSync(":memory:");
-  db.exec(readFileSync(fileURLToPath(new URL("../migrations/0001_init.sql", import.meta.url)), "utf8"));
+  const dir = fileURLToPath(new URL("../migrations/", import.meta.url));
+  for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) {
+    db.exec(readFileSync(`${dir}/${f}`, "utf8"));
+  }
 
   const statement = (sql: string, params: unknown[] = []): any => ({
     bind: (...p: unknown[]) => statement(sql, p),
