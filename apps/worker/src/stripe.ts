@@ -38,6 +38,9 @@ export interface PaidInvoiceInfo {
   clientName: string;
   clientEmail: string;
   requiredIntegrations: string[];
+  /** Amount paid in Stripe's smallest unit (cents for USD). Null if Stripe didn't send it. */
+  amountPaid: number | null;
+  currency: string | null;
 }
 
 /**
@@ -70,5 +73,7 @@ export function readPaidInvoice(event: any): PaidInvoiceInfo | { error: string }
     clientName: clientName || clientEmail,
     clientEmail,
     requiredIntegrations,
+    amountPaid: typeof inv.amount_paid === "number" ? inv.amount_paid : null,
+    currency: typeof inv.currency === "string" ? inv.currency : null,
   };
 }

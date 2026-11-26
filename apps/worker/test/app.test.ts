@@ -16,6 +16,8 @@ let emails: Array<{ to: string[]; subject: string; text: string; key: string | n
 let pending: Promise<unknown>[];
 let landingCalls: Array<{ body: any; secret: string | null }>;
 let landingRespond: () => Response;
+let slack: Array<{ url: string; body: any }>;
+let slackStatus: number;
 
 const ctx = () =>
   ({ waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException() {}, props: {} }) as unknown as ExecutionContext;
@@ -96,6 +98,8 @@ beforeEach(() => {
   pending = [];
   landingCalls = [];
   landingRespond = () => Response.json({ ok: true, client_record_id: "rec1" });
+  slack = [];
+  slackStatus = 200;
   env = {
     DB: fakeD1(),
     ASSETS_BUCKET: r2.bucket,
@@ -133,6 +137,10 @@ beforeEach(() => {
     if (url === "https://landing.test/api/onboard") {
       landingCalls.push({ body: JSON.parse(String(init.body)), secret: new Headers(init.headers).get("X-Webhook-Secret") });
       return landingRespond();
+    }
+    if (url.startsWith("https://hooks.slack.com/")) {
+      slack.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(slackStatus === 200 ? "ok" : "server_error", { status: slackStatus });
     }
     throw new Error(`unexpected outbound call in test: ${url}`);
   }) as typeof fetch);
@@ -458,5 +466,158 @@ describe("Resend sender guard", () => {
     }) as typeof fetch);
     await stripe(paidInvoice());
     expect(seen).toEqual(["ZinkPress <hello@zinkpress.test>"]);
+  });
+});
+
+describe("Slack alerts", () => {
+  const HOOK = (name: string) => `https://hooks.slack.com/services/T000/B000/${name}`;
+  const posts = (name: string) => slack.filter((p) => p.url === HOOK(name));
+  const allText = (p: { body: any }) => JSON.stringify(p.body);
+
+  beforeEach(() => {
+    env.SLACK_WEBHOOK_REVENUE = HOOK("revenue");
+    env.SLACK_WEBHOOK_SPRINT_OPS = HOOK("sprint");
+    env.SLACK_WEBHOOK_APPROVALS = HOOK("approvals");
+    env.SLACK_WEBHOOK_ERRORS = HOOK("errors");
+  });
+
+  async function paidAndSubmitted() {
+    const inv = paidInvoice();
+    (inv.data.object as any).amount_paid = 150000;
+    (inv.data.object as any).currency = "usd";
+    await stripe(inv);
+    const token = tokenFromLastEmail();
+    const { json } = await uploadLogo(token, fakePng(1600, 6));
+    const r = await req("/api/onboarding/submit", {
+      method: "POST",
+      headers: { ...auth(token), "Content-Type": "application/json" },
+      body: JSON.stringify(goodPayload(json.key)),
+    });
+    await Promise.all(pending);
+    return { token, r };
+  }
+
+  it("posts a paid invoice to #pipeline-revenue once, with the real amount and no intake link", async () => {
+    const inv = paidInvoice();
+    (inv.data.object as any).amount_paid = 150000;
+    (inv.data.object as any).currency = "usd";
+    await stripe(inv);
+    await Promise.all(pending);
+    const token = tokenFromLastEmail();
+
+    expect(posts("revenue")).toHaveLength(1);
+    const msg = posts("revenue")[0].body;
+    expect(msg.text).toBe("💰 Invoice paid: $1,500.00");
+    expect(allText(posts("revenue")[0])).toContain("ZP-2026-014");
+    expect(allText(posts("revenue")[0])).not.toContain(token);
+
+    await stripe(inv); // Stripe re-delivers the same event
+    await Promise.all(pending);
+    expect(posts("revenue")).toHaveLength(1);
+  });
+
+  it("a Slack outage never breaks the Stripe webhook", async () => {
+    slackStatus = 500;
+    const r = await stripe(paidInvoice());
+    await Promise.all(pending);
+    expect(r.status).toBe(200);
+    expect(r.json.session).toBe("created");
+    expect(posts("revenue")).toHaveLength(1);
+  });
+
+  it("posts the sprint clock and the Jira epic link to #sprint-ops", async () => {
+    const { token } = await paidAndSubmitted();
+    const sprint = posts("sprint");
+    expect(sprint.map((p) => p.body.text)).toEqual([
+      "🚀 Sprint clock running: ZP-2026-014",
+      "🗂️ Jira epic ready: ZP-2026-014",
+    ]);
+    const jiraPost = allText(sprint[1]);
+    expect(jiraPost).toContain("https://zinkpress.atlassian.net/browse/ZP-1");
+    expect(allText(sprint[0])).not.toContain(token);
+    expect(allText(sprint[0])).not.toContain("supersecret");
+  });
+
+  it("alerts #worker-errors once when a kickoff follow-up keeps failing", async () => {
+    jira = fakeJira({ failBulkOnce: true });
+    await paidAndSubmitted();
+    expect(posts("errors")).toHaveLength(1);
+    expect(posts("errors")[0].body.text).toContain("Kickoff follow-up failed");
+  });
+
+  it("alerts #worker-errors on a 500, and the caller still gets its normal answer", async () => {
+    const realDb = env.DB;
+    env.DB = { prepare: () => { throw new Error("D1 is down"); } } as unknown as D1Database;
+    const r = await req("/api/session", { headers: auth("x".repeat(43)) });
+    env.DB = realDb;
+    await Promise.all(pending);
+    expect(r.status).toBe(500);
+    expect(posts("errors")).toHaveLength(1);
+    expect(posts("errors")[0].body.text).toBe("🔴 Worker error: GET /api/session");
+    expect(allText(posts("errors")[0])).toContain("D1 is down");
+  });
+
+  it("skips quietly when no webhook URLs are set", async () => {
+    delete env.SLACK_WEBHOOK_REVENUE;
+    delete env.SLACK_WEBHOOK_SPRINT_OPS;
+    delete env.SLACK_WEBHOOK_ERRORS;
+    await paidAndSubmitted();
+    expect(slack).toHaveLength(0);
+  });
+});
+
+describe("8 AM workload check", () => {
+  const HOOK = "https://hooks.slack.com/services/T000/B000/sprint";
+  // 8:17 AM Eastern on Tue Dec 1 2026 (EST, UTC-5).
+  const at817 = new Date("2026-12-01T13:17:00.000Z");
+  const capture = (async (u: RequestInfo | URL, i: RequestInit = {}) => {
+    slack.push({ url: String(u), body: JSON.parse(String(i.body)) });
+    return new Response("ok");
+  }) as typeof fetch;
+
+  beforeEach(() => {
+    env.SLACK_WEBHOOK_SPRINT_OPS = HOOK;
+  });
+
+  async function addSession(projectId: string, status: string, sinceIso: string) {
+    await env.DB.prepare(
+      `INSERT INTO onboarding_sessions (id, project_id, client_name, client_email, tier, status, token_hash, token_expires_at, intake_email_sent_at, guaranteed_deadline)
+       VALUES (?, ?, ?, ?, 'TIER_1', ?, ?, '2099-01-01T00:00:00.000Z', ?, '2026-12-03T14:00:00.000Z')`,
+    )
+      .bind(crypto.randomUUID(), projectId, `Client ${projectId}`, `${projectId}@x.test`, status, crypto.randomUUID(), sinceIso)
+      .run();
+  }
+
+  it("only runs in the 8 AM Eastern hour, and only once a day", async () => {
+    const { runDailyWorkloadCheck } = await import("../src/workload");
+    await addSession("ZP-A", "CLOCK_RUNNING", "2026-11-30T12:00:00.000Z");
+    await addSession("ZP-B", "CLOCK_RUNNING", "2026-11-30T12:00:00.000Z");
+    await addSession("ZP-C", "AWAITING_CREDENTIALS", "2026-11-28T12:00:00.000Z"); // ~73 hours
+    await addSession("ZP-D", "AWAITING_CREDENTIALS", "2026-12-01T10:00:00.000Z"); // 3 hours, not stalled
+
+    const at9 = new Date("2026-12-01T14:17:00.000Z");
+    expect((await runDailyWorkloadCheck(env, capture, at9)).ran).toBe(false);
+    expect(slack).toHaveLength(0);
+
+    const first = await runDailyWorkloadCheck(env, capture, at817);
+    expect(first).toMatchObject({ ran: true, activeSprints: 2, stalledClients: 1, posted: ["capacity", "stalled"] });
+    expect(slack.map((p) => p.body.text)).toEqual([
+      "⚠️ 2 sprints running at once",
+      "⏳ 1 paid client stuck on the intake form",
+    ]);
+    expect(JSON.stringify(slack[1].body)).toContain("ZP-C");
+    expect(JSON.stringify(slack[1].body)).not.toContain("ZP-D");
+
+    const again = await runDailyWorkloadCheck(env, capture, new Date("2026-12-01T13:40:00.000Z"));
+    expect(again).toMatchObject({ ran: false, reason: "already_posted_today" });
+    expect(slack).toHaveLength(2);
+  });
+
+  it("stays quiet when there's nothing to report", async () => {
+    const { runDailyWorkloadCheck } = await import("../src/workload");
+    await addSession("ZP-A", "CLOCK_RUNNING", "2026-11-30T12:00:00.000Z");
+    const r = await runDailyWorkloadCheck(env, capture, at817);
+    expect(r).toMatchObject({ ran: true, posted: [] });
+    expect(slack).toHaveLength(0);
   });
 });

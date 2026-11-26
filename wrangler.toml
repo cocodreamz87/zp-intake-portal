@@ -16,6 +16,7 @@ run_worker_first = ["/api/*"]
 
 # Housekeeping every hour: wipe client API keys after their purge date,
 # expire old links, retry Jira/receipt emails that failed.
+# The 8:17 AM Eastern run also posts the morning workload check to #sprint-ops.
 [triggers]
 crons = ["17 * * * *"]
 
@@ -62,3 +63,10 @@ JIRA_TASK_TYPE = "Task"
 #   ZP_LANDING_WEBHOOK_SECRET  the same value as WEBHOOK_SECRET on the zp-landing Worker
 # After a submit, the intake portal posts the client to zp-landing (Drive, Airtable, HubSpot,
 # welcome email, Slack). The hourly cron retries until zp-landing answers 2xx.
+#
+# Slack alerts (all optional; each one is skipped until its URL is set).
+# Each value is a Slack Incoming Webhook URL (https://hooks.slack.com/services/...).
+#   SLACK_WEBHOOK_REVENUE     #pipeline-revenue   invoice paid
+#   SLACK_WEBHOOK_SPRINT_OPS  #sprint-ops         sprint clock started, Jira epic ready, 8 AM workload check
+#   SLACK_WEBHOOK_APPROVALS   #staging-approvals  reserved for staging approvals (nothing posts here yet)
+#   SLACK_WEBHOOK_ERRORS      #worker-errors      any 500 error, and kickoff follow-ups that fail

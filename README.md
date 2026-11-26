@@ -145,7 +145,26 @@ This needs the `landing_synced_at` column: run `npm run db:migrate:remote` once 
 3. In Cloudflare, add Secrets `JIRA_EMAIL` (your Atlassian login) and `JIRA_API_TOKEN`.
 4. If your Jira project calls its types something other than Epic and Task, change `JIRA_EPIC_TYPE` and `JIRA_TASK_TYPE`.
 
-### 9. Optional extras
+### 9. Slack alerts (optional)
+The Worker can post to four channels in your ZinkPress Slack. Each alert is skipped until its webhook address is added, and a Slack problem never breaks a Stripe webhook or a client's submit.
+
+| Channel | Secret | What posts there |
+|---|---|---|
+| #pipeline-revenue | `SLACK_WEBHOOK_REVENUE` | Invoice paid: client, project, tier, the real amount from Stripe, whether the intake link was emailed. |
+| #sprint-ops | `SLACK_WEBHOOK_SPRINT_OPS` | Sprint clock started (kickoff and staging deadline in Eastern time), Jira epic ready (with a button), and an 8:17 AM check: a heads-up when 2 or more sprints are running, and a list of clients who've had their link over 48 hours without submitting. |
+| #staging-approvals | `SLACK_WEBHOOK_APPROVALS` | Nothing yet. Saved for the approve-staging buttons, which need a separate Slack app. |
+| #worker-errors | `SLACK_WEBHOOK_ERRORS` | Any 500 error (route plus the first lines of the error), and Jira or receipt follow-ups that fail (once per new error, not every hourly retry). |
+
+Slack messages never include a client's intake link or their API keys.
+
+Set it up:
+1. Go to https://api.slack.com/apps, click **Create New App** → **From scratch**, name it "ZinkPress Alerts", and pick the ZinkPress workspace.
+2. Open **Incoming Webhooks**, turn it on, click **Add New Webhook to Workspace**, pick `#pipeline-revenue`, and click **Allow**. Copy the address it shows (starts with `https://hooks.slack.com/`).
+3. Repeat step 2 for `#sprint-ops`, `#staging-approvals` and `#worker-errors`. Each channel gets its own address.
+4. In Cloudflare, add four Secrets (same way as step 4), each holding the matching address: `SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRINT_OPS`, `SLACK_WEBHOOK_APPROVALS`, `SLACK_WEBHOOK_ERRORS`.
+5. Treat these addresses like passwords: anyone who has one can post to that channel.
+
+### 10. Optional extras
 - A Secret named `GITHUB_TOKEN` holding a fine-grained GitHub token with no permissions. It raises GitHub's lookup limit from 60 to 5,000 an hour.
 - A nicer address like `intake.yourdomain.com`: on the Worker's page, **Settings → Domains & Routes → Add → Custom domain**. Then set `PORTAL_URL` in `wrangler.toml` to that address and push, so emailed links use it.
 
