@@ -124,11 +124,11 @@ From now on, every push to the `main` branch on GitHub redeploys the portal on i
    - `client_name` → optional; otherwise the customer name is used
 7. Test it: in Stripe **test mode**, send yourself an invoice with the metadata above and pay it with the test card `[REDACTED-PAN]`. Then check the project with the admin command below.
 
-### 6. Emails (Resend), once you have a domain
+### 6. Emails (Resend)
 Resend only sends from a domain you own and verify. A Proton address can't be the sender.
-- **Until you have a domain:** skip this. Make links with the admin command below and send them from your Proton email yourself.
-- **Once you have a domain:** verify it in Resend, create an API key, and add it in Cloudflare as a Secret named `RESEND_API_KEY`. In `wrangler.toml`, set `RECEIPT_FROM_EMAIL` to something like `intake@yourdomain.com` and push. `AGENCY_EMAIL` stays as the reply-to.
-- Nothing is emailed until **both** `RESEND_API_KEY` and `RECEIPT_FROM_EMAIL` are set. The portal never sends from `AGENCY_EMAIL`.
+- **Set up:** zinkpress.com is verified in Resend, and `wrangler.toml` sends from `RECEIPT_FROM_EMAIL = "intake@zinkpress.com"`. The API key goes in Cloudflare as a Secret named `RESEND_API_KEY`. `AGENCY_EMAIL` stays as the reply-to.
+- To change the sender, edit `RECEIPT_FROM_EMAIL` in `wrangler.toml` (any address on a Resend-verified domain) and push. Don't set it in the dashboard: the next deploy replaces dashboard vars with `wrangler.toml`.
+- Nothing is emailed until **both** `RESEND_API_KEY` and `RECEIPT_FROM_EMAIL` are set. The portal never sends from `AGENCY_EMAIL`. A `RESEND_FROM_EMAIL` secret is not read here (that name is zp-landing's).
 
 ### 7. Hand clients to zp-landing
 zp-landing is the home of onboarding. This portal only collects the intake, then calls zp-landing once per client.

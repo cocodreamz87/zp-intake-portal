@@ -156,7 +156,7 @@ Incoming webhooks, one per channel (`SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRI
 
 ### Resend (email)
 
-- **Enabled by:** secret `RESEND_API_KEY` **and** var `RECEIPT_FROM_EMAIL` (a sender on a Resend-verified domain). If either is empty nothing is emailed; `AGENCY_EMAIL` (Proton) is never used as the sender because Resend rejects it. `AGENCY_EMAIL` is the `reply_to`.
+- **Enabled by:** secret `RESEND_API_KEY` **and** var `RECEIPT_FROM_EMAIL` (a sender on a Resend-verified domain; set to `intake@zinkpress.com` in `wrangler.toml`). If either is empty nothing is emailed; `AGENCY_EMAIL` (Proton) is never used as the sender because Resend rejects it. `AGENCY_EMAIL` is the `reply_to`.
 - **Endpoint:** `POST https://api.resend.com/emails`, `Authorization: Bearer <RESEND_API_KEY>`, body `{from, to:[…], reply_to, subject, html, text}`.
 - **Emails and idempotency keys:**
   - Intake link (invoice paid, admin create, reissue): `intake-<sessionId>-<expiresAt>`.
