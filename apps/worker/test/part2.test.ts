@@ -370,9 +370,10 @@ describe("re-auth (maintenance) links", () => {
   });
 
   it("makes the link without email when Resend isn't set up", async () => {
-    delete env.RESEND_API_KEY;
     await runningProject();
     await launch();
+    delete env.RESEND_API_KEY;
+    emails = [];
     const r = await req("/api/admin/sessions/ZP-2026-040/maintenance", { method: "POST", headers: admin, body: "{}" });
     expect(r.status).toBe(201);
     expect(r.json.emailed).toEqual([]);
@@ -400,9 +401,10 @@ describe("50% and 100% sprint emails", () => {
   });
 
   it("is a clean no-op without Resend: nothing sent, nothing marked", async () => {
-    delete env.RESEND_API_KEY;
     await runningProject();
     await setClock("2026-12-07T14:00:00.000Z", "2026-12-21T14:00:00.000Z");
+    delete env.RESEND_API_KEY;
+    emails = [];
     const out = await runMilestones(env, fakeFetch, now);
     expect(out).toMatchObject({ halfSent: 0, fullSent: 0, testimonialRequests: 0 });
     expect(emails).toHaveLength(0);

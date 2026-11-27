@@ -1460,11 +1460,11 @@ app.post("/api/admin/invoices/from-deal", requireAdmin, async (c) => {
     dealId,
   );
   if (res.status !== 201) return res;
-  const out = (await res.clone().json()) as { hostedInvoiceUrl: string | null; amountCents: number };
+  const out = (await res.json()) as Record<string, unknown> & { hostedInvoiceUrl: string | null; amountCents: number };
   await markDealInvoiced(env, { dealId, projectId, amountCents: out.amountCents, invoiceUrl: out.hostedInvoiceUrl }, f).catch((err) =>
     console.error("HubSpot deal stage update failed:", err instanceof Error ? err.message : err),
   );
-  return c.json({ ...(await res.json()), dealId, contactEmail: deal.contactEmail, companyName: deal.companyName }, 201);
+  return c.json({ ...out, dealId, contactEmail: deal.contactEmail, companyName: deal.companyName }, 201);
 });
 
 /** Run the housekeeping job now instead of waiting for the cron. */
