@@ -16,6 +16,10 @@ Client ──► intake form (same Worker) ──► submit ──► clock star
 
 Every API this Worker serves and every service it calls is documented in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
+**Working on this repo (people and AI agents):** read [AGENTS.md](AGENTS.md) first. It has the full map, every route, binding and setting by name, the deploy rules, and how this repo fits the rest of the ZinkPress system. [CLAUDE.md](CLAUDE.md) points Claude Code at it. Open a pull request for every change; nothing merges or deploys without Demetrius Moreland's yes.
+
+**Where it fits:** leads and scoping calls are handled by zp-landing and zp-booking. This portal makes the Stripe invoice, owns `invoice.paid`, collects the intake, runs the contract and the staging sign-off, and hands each client to zp-landing for onboarding. It is live, with Stripe in live mode.
+
 One Cloudflare Worker does everything: `/api/...` addresses run the API, and every other address shows the intake form.
 
 | Folder | What it is |
@@ -48,7 +52,7 @@ One Cloudflare Worker does everything: `/api/...` addresses run the API, and eve
 10. **GitHub check was only a length check.** It now uses GitHub's real name rules, then asks GitHub's API whether the account exists. If GitHub is down, the client can still submit and the row is marked unverified for you.
 11. **Secrets purge wasn't built.** When you mark a project launched, the encrypted keys are wiped 7 days later (`SECRETS_PURGE_DAYS`) by the cron job.
 12. **One Worker instead of Pages + Worker.** The form and the API ship together as one Cloudflare Worker, so Cloudflare can build and deploy it from GitHub on every push, there's no cross-site setup, and client links use the Worker's own address automatically.
-13. **Smaller fixes:** encryption is bound to the project id (a blob copied to another row won't decrypt); two quick submits can't start two clocks; secrets never go into Jira, emails, or the audit log (key names only); the copy step rejects placeholder text like "Lorem ipsum" or "TBD"; `STRIPE_SECRET_KEY` isn't needed (the portal only receives webhooks); Jira's due date uses the Eastern date, not the UTC date.
+13. **Smaller fixes:** encryption is bound to the project id (a blob copied to another row won't decrypt); two quick submits can't start two clocks; secrets never go into Jira, emails, or the audit log (key names only); the copy step rejects placeholder text like "Lorem ipsum" or "TBD"; Jira's due date uses the Eastern date, not the UTC date.
 
 ## Run it on your computer
 
@@ -133,7 +137,7 @@ Resend only sends from a domain you own and verify. A Proton address can't be th
 ### 7. Hand clients to zp-landing
 zp-landing is the home of onboarding. This portal only collects the intake, then calls zp-landing once per client.
 1. In Cloudflare, on the `zp-intake-portal` Worker, add two Secrets: `ZP_LANDING_ONBOARD_URL` = `https://zp-landing.peaceiam4now.workers.dev/api/onboard`, and `ZP_LANDING_WEBHOOK_SECRET` = the same value as `WEBHOOK_SECRET` on the `zp-landing` Worker.
-2. In Stripe, make sure only this portal listens for `invoice.paid`. zp-landing's own Stripe endpoint must be removed, or every payment onboards twice.
+2. Onboarding starts only from this hand-off. zp-landing's own `/api/stripe-webhook` acknowledges Stripe events and does nothing else, so a Stripe endpoint pointed there can't onboard anyone twice; it can still be removed from Stripe to keep things tidy.
 
 What it sends: `event_id` (the project id, so a retry resumes the same run), `company_name`, `contact_name`, `contact_email` (the approver from the form, or the invoice email) and `scope_tier` (`TIER_1` to `TIER_3`). Any 2xx answer counts as done. A 500, 409 or 401 is retried by the hourly cron job. The audit log shows `landing.synced`, `landing.skipped` or `followup.failed`.
 
@@ -152,8 +156,9 @@ The Worker can post to four channels in your ZinkPress Slack. Each alert is skip
 |---|---|---|
 | #pipeline-revenue | `SLACK_WEBHOOK_REVENUE` | Invoice paid: client, project, tier, the real amount from Stripe, whether the intake link was emailed. |
 | #sprint-ops | `SLACK_WEBHOOK_SPRINT_OPS` | Sprint clock started (kickoff and staging deadline in Eastern time), Jira epic ready (with a button), and an 8:17 AM check: a heads-up when 2 or more sprints are running, and a list of clients who've had their link over 48 hours without submitting. |
-| #staging-approvals | `SLACK_WEBHOOK_APPROVALS` | Nothing yet. Saved for the approve-staging buttons, which need a separate Slack app. |
-| #worker-errors | `SLACK_WEBHOOK_ERRORS` | Any 500 error (route plus the first lines of the error), and Jira or receipt follow-ups that fail (once per new error, not every hourly retry). |
+| #staging-approvals | `SLACK_WEBHOOK_APPROVALS` | The client's review link when staging is ready, and the launch sign-off. Anyone holding the review link can approve, so treat the channel as private. |
+| #contract-approvals | `SLACK_WEBHOOK_CONTRACTS` | PandaDoc draft ready, with the **Approve & Send Contract** button (see step 10). |
+| #worker-errors | `SLACK_WEBHOOK_ERRORS` | Any 500 error, any failed outside call (Stripe, PandaDoc, Resend, Jira, zp-landing), and $500+ invoices paid by card (once per new error, with a 6-hour de-dupe). |
 
 Slack messages never include a client's intake link or their API keys.
 
@@ -199,4 +204,8 @@ SECRETS_ENCRYPTION_KEY="your encryption key" node scripts/reveal-secrets.mjs ZP-
 
 ## Tests
 
-`npm test` runs 69 tests: the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, Jira, Resend, or GitHub for real.
+`npm test` runs 114 tests (the count when PR #7 merged on Nov 27, 2026): the clock math (including daylight saving and holidays), the form rules, Stripe signatures, encryption, file checks, GitHub checks, Jira retry safety, and the whole API flow against a real copy of the database schema. No test calls Stripe, PandaDoc, Slack, Jira, Resend, or GitHub for real.
+
+## Deploys
+
+Cloudflare Workers Builds deploys `main` on every push (step 3 above), so `main` is live. Preview builds for other branches fail in Cloudflare; that is a known pattern, not a code bug. This `wrangler.toml` has no `keep_vars`, so every deploy replaces dashboard vars with the file: change plain settings here, never in the dashboard.
