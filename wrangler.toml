@@ -43,7 +43,7 @@ HOLIDAYS = "2026-01-01,2026-01-19,2026-02-16,2026-05-25,2026-06-19,2026-07-03,20
 SLACK_CONTRACT_APPROVERS = ""                     # Slack member ids (U0123ABC,...) allowed to click Approve & Send. Empty = anyone in #contract-approvals
 TOKEN_TTL_DAYS = "14"                            # how long a client's intake link works
 SECRETS_PURGE_DAYS = "7"                         # wipe client API keys this many days after launch
-RECEIPT_FROM_EMAIL = ""                          # a Resend-verified sender. Empty = no emails at all (Resend rejects the Proton AGENCY_EMAIL)
+RECEIPT_FROM_EMAIL = "intake@zinkpress.com"      # sender on zinkpress.com (verified in Resend). Empty = no emails at all (Resend rejects the Proton AGENCY_EMAIL)
 STAGING_URL_TEMPLATE = ""                        # e.g. "https://{project}.pages.dev" (optional)
 CLOUDFLARE_HELP_URL = "https://developers.cloudflare.com/fundamentals/manage-members/manage/"
 JIRA_DOMAIN = ""                                 # e.g. "zinkpress.atlassian.net" (leave empty to skip Jira)
@@ -56,7 +56,7 @@ JIRA_TASK_TYPE = "Task"
 #   SECRETS_ENCRYPTION_KEY  any random password, 32+ characters. Never change or lose it.
 #   ADMIN_API_TOKEN         any random password, 32+ characters
 #   STRIPE_WEBHOOK_SECRET   whsec_... from your Stripe webhook
-#   RESEND_API_KEY          re_... (optional, needs your own domain)
+#   RESEND_API_KEY          re_... from the Resend account where zinkpress.com is verified
 #   JIRA_EMAIL              your Atlassian login email (optional)
 #   JIRA_API_TOKEN          from id.atlassian.com (optional)
 #   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)
