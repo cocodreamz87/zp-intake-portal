@@ -69,6 +69,17 @@ CORS: only origins listed in `ALLOWED_ORIGIN` (comma list); same-site calls need
 
 On a successful submit: API keys are encrypted (AES-256-GCM, key from `SECRETS_ENCRYPTION_KEY`, bound to the project id), the clock starts at the next 9:00 AM business morning in `BUSINESS_TIMEZONE`, and the deadline is 5 / 10 / 20 business days later for Tier 1 / 2 / 3 (weekends and `HOLIDAYS` skipped). Then the post-submit job runs in the background.
 
+### Client status, re-auth and testimonial pages
+
+| Method & path | Auth | Request | Response |
+|---|---|---|---|
+| `GET /api/status` | client link token (the intake link, or the review link once in review) | none | `200` `projectId, clientName, tier, status, stage` (`INTAKE_COMPLETE` before the 9:00 AM kickoff, `BUILDING`, `STAGING_REVIEW`, `LAUNCHED`), `timeZone, clockStartedAt, guaranteedDeadline, businessDaysTotal, businessDaysElapsed, businessDaysLeft, percent, reviewRequestedAt, launchedAt`. A day counts once its 9:00 AM boundary passes. No keys, contract, KYB or approver details. The form shows this page on the same link after submit, with a live countdown. |
+| `GET /api/maintenance` | re-auth link token (`/maintenance?token=…`) | none | `200 {projectId, clientName, requiredIntegrations[], note, status, expiresAt, submittedAt}`. `401` bad link, `410` expired or replaced. |
+| `POST /api/maintenance/submit` | re-auth link token | `{"secrets":{"KEY":"value"}}` (only the listed keys are kept) | `200 {"status":"SUBMITTED","submittedAt","secretsPurgeAfter"}`; repeat = same answer, nothing overwritten. `422 {"fields":{"secrets.KEY"}}`, `503` without `SECRETS_ENCRYPTION_KEY`. Encrypted like the intake (AES-256-GCM, bound to the project id). Read locally with `node scripts/reveal-secrets.mjs <project> --maintenance`. |
+| `GET /api/testimonial` | testimonial link token (`/testimonial?token=…`) | none | `200 {projectId, clientName, status, suggestedName, businessDays, …}`. |
+| `POST /api/testimonial` | testimonial link token | `{"quote","authorName","authorRole"?,"company"?,"linkUrl"?,"consent":true}` | `200 {"status":"PENDING"}`; quote 20 to 400 characters; consent required and saved with time and IP. Posts "⭐ New testimonial to approve" to #sprint-ops. |
+| `GET /api/testimonials` | none (public) | none | `200 {"testimonials":[{id, quote, authorName, authorRole, company, headline, tier, businessDays, linkUrl, approvedAt}]}`, approved and consented only, `Cache-Control: public, max-age=300`. zp-landing reads it. |
+
 ### Stripe webhook
 
 `POST /api/stripe/webhook`, Stripe signature auth.
@@ -91,7 +102,15 @@ On a successful submit: API keys are encrypted (AES-256-GCM, key from `SECRETS_E
 | `POST /api/contracts/draft` | `{"projectId"}` | `201 {"status":"drafted","documentId"}` or `200 {"status":"exists"}`. Makes the PandaDoc draft now and posts it to #contract-approvals. `503` without PandaDoc settings. |
 | `POST /api/admin/sessions/:projectId/send-contract` | none | Fallback for the Slack button. `200 {"status":"sent"}`, `409 {"status":"already"}`, `425 {"status":"not_ready","reason"}` (no draft yet, or PandaDoc still preparing it). |
 | `POST /api/admin/sessions/:projectId/ready-for-review` | `{"stagingUrl":"https://…","loomUrl":"https://www.loom.com/share/<id>","releaseNotes":"…"}` | `200 {"status":"IN_REVIEW","link","expiresAt","emailed"[]}`. Issues a new link token (the old intake link stops working), emails `/review?token=…` to the approver and client (when Resend is set up), and posts it to #staging-approvals. `400` bad links, `409` not submitted yet or already launched. |
-| `POST /api/admin/run-cron` | none | Runs housekeeping now; returns `{"secretsPurged","linksExpired","followupsRetried"}`. |
+| `POST /api/admin/invoices/from-deal` | `{"dealId","tier"?,"amountCents"?,"milestone"?:"deposit","integrations"?[],"projectId"?,"daysUntilDue"?:7,"send"?:false}` | Reads the HubSpot deal (contact email and name, company), takes the tier from the body or "(Tier n)" in the deal name, gives the deal a project id (`ZP-<year>-<NNN>`, the next free one; the same deal always gets the same id, table `deal_projects`), and makes the invoice exactly like `/api/admin/invoices` (bank-only at $500+), plus metadata `hubspot_deal_id`. Amount defaults to the list price ($1,500 / $5,500 / $10,000); pass `amountCents` for a deposit or a bigger Tier 3. **Not emailed unless `"send": true`**, so you can check the hosted invoice first. Then `PATCH` the deal: `dealstage` = `HUBSPOT_INVOICE_STAGE` (`contractsent`), `amount`. `503` without `HUBSPOT_ACCESS_TOKEN` or `STRIPE_SECRET_KEY`, `502` HubSpot error. |
+| `POST /api/admin/sessions/:projectId/maintenance` | `{"requiredIntegrations"?[],"note"?}` | Launched projects only (`409` otherwise). `201 {"requestId","link","expiresAt","emailed","requiredIntegrations"}`. Keys default to the intake's list. Link works `MAINTENANCE_LINK_DAYS` (7); a newer link closes the older one. Emailed to approver and client when Resend is set up. |
+| `GET /api/admin/sessions/:projectId/maintenance` | none | Last 20 re-auth requests (status, dates, `has_encrypted_secrets`), never the keys. |
+| `POST /api/admin/maintenance/:id/done` | none | `200 {"status":"DONE","secretsPurgeAfter"}`: keys wiped `SECRETS_PURGE_DAYS` (7) from now, or sooner if already due. Otherwise they're wiped `MAINTENANCE_PURGE_DAYS` (14) after the client sends them. |
+| `POST /api/admin/sessions/:projectId/testimonial-link` | none | Launched only. `200 {"testimonialId","status","link","expiresAt"}` (30 days), so you can send it yourself. |
+| `GET /api/admin/testimonials?status=PENDING` | none | Up to 50 quotes in that status (`REQUESTED`, `PENDING`, `APPROVED`, `REJECTED`). |
+| `POST /api/admin/testimonials/:id/approve` | `{"headline"?,"quote"?,"authorName"?,"authorRole"?,"company"?}` | `200 {"status":"APPROVED"}`. Only now does it show on zp-landing. Keep any edit true to what they wrote. |
+| `POST /api/admin/testimonials/:id/reject` | none | `200 {"status":"REJECTED"}`. |
+| `POST /api/admin/run-cron` | none | Runs housekeeping now; returns `{"secretsPurged","linksExpired","followupsRetried","maintenanceKeysPurged","maintenanceLinksExpired","milestones",…}`. |
 
 ### Slack and PandaDoc callbacks
 
@@ -105,7 +124,13 @@ On a successful submit: API keys are encrypted (AES-256-GCM, key from `SECRETS_E
 1. Wipes client API keys past their purge date.
 2. Marks unfinished links past expiry as `EXPIRED`.
 3. Retries Jira, the kickoff receipt and the zp-landing hand-off for up to 10 `CLOCK_RUNNING` or `IN_REVIEW` sessions where any of `jira_synced_at`, `receipt_sent_at`, `landing_synced_at` is empty.
-4. Contracts and launch (10 each): drafts for paid projects with no PandaDoc document yet (only sessions this version created, `amount_cents` set), signed PDFs not yet in R2 or Drive (Drive waits until `landing_synced_at`), and launches not yet marked Complete in Airtable.
+4. Re-auth links: wipes re-entered keys past their purge date and closes unused links past expiry.
+5. Client emails (`milestones.ts`, all no-ops without Resend: nothing sent, marked or logged):
+   - **50%** on business day 3 of 5, 5 of 10, 10 of 20, while still `CLOCK_RUNNING`, to approver and client. No link in it: their private intake link shows the live status. Skipped (and logged `milestone.half_skipped`) if the sprint is already in review or past its deadline.
+   - **100%** at the deadline: "today is delivery day" if still building, "sprint complete, ready for your sign-off" if in review. Skipped if the deadline passed more than 48 hours ago, so turning Resend on later can't send a backlog.
+   - **Testimonial request** `TESTIMONIAL_DELAY_DAYS` (3) after launch, within 30 days, with a `/testimonial?token=…` link. Needs `PORTAL_URL` too (the cron has no address of its own); until then use the admin `testimonial-link` route.
+   - **#sprint-ops "⏰ Deadline reached, staging not in review"** once per project at the deadline if still `CLOCK_RUNNING` (doesn't need Resend).
+6. Contracts and launch (10 each): drafts for paid projects with no PandaDoc document yet (only sessions this version created, `amount_cents` set), signed PDFs not yet in R2 or Drive (Drive waits until `landing_synced_at`), and launches not yet marked Complete in Airtable.
 
 ## Outgoing calls (this Worker calls them)
 
@@ -180,14 +205,14 @@ Incoming webhooks, one per channel (`SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRI
 
 | Binding | Resource | What's in it |
 |---|---|---|
-| `DB` | D1 `zp-intake` (`dbe569b8-56f6-48db-9e8b-c0e50551e4c3`) | `onboarding_sessions` (one row per project, incl. `jira_synced_at`, `receipt_sent_at`, `landing_synced_at`, payment, KYB, contract and review columns from migration 0003), `audit_log` (key names only, never values), `stripe_events`, `worker_alerts` (alert de-dupe). Migrations in `apps/worker/migrations`; apply with `npm run db:migrate:remote`. |
+| `DB` | D1 `zp-intake` (`dbe569b8-56f6-48db-9e8b-c0e50551e4c3`) | `onboarding_sessions` (one row per project, incl. `jira_synced_at`, `receipt_sent_at`, `landing_synced_at`, payment, KYB, contract and review columns from migration 0003), `audit_log` (key names only, never values), `stripe_events`, `worker_alerts` (alert de-dupe). `maintenance_requests`, `testimonials`, `deal_projects` (migration 0004). Migrations in `apps/worker/migrations`; apply with `npm run db:migrate:remote`. |
 | `ASSETS_BUCKET` | R2 `zp-intake-assets` (private) | `<project_id>/assets/logo-<uuid>.<ext>` and `asset-<uuid>.<ext>`, custom metadata `originalName`, `sessionId`; signed contracts at `<project_id>/contracts/<project_id>-MSA-SOW-SIGNED.pdf`. |
 | `[assets]` | `apps/web/dist` | The intake form (SPA); `/api/*` runs the Worker first. |
 | cron | `17 * * * *` | Housekeeping above. |
 
 ## Audit log events
 
-`stripe.blocked_card_over_500`, `stripe.blocked_rail_over_500`, `stripe.rail_unverified`, `invoice.created`, `kyb.webmail_flagged`, `kyb.override`, `contract.drafted`, `contract.approval_requested`, `contract.approval_refused`, `contract.sent`, `contract.signed`, `contract.declined`, `contract.voided`, `contract.backed_up`, `contract.drive_synced`, `review.requested`, `review.approved`, `landing.completed`, `session.created`, `intake.emailed`, `asset.uploaded`, `clock.started`, `submit.blocked`, `jira.synced`, `jira.skipped`, `receipt.sent`, `receipt.skipped`, `landing.synced`, `landing.skipped`, `followup.failed`, `link.reissued`, `launched`, `stripe.ignored`, `cron`.
+`milestone.half_sent`, `milestone.half_skipped`, `milestone.full_sent`, `milestone.full_skipped`, `maintenance.requested`, `maintenance.submitted`, `maintenance.done`, `testimonial.requested`, `testimonial.skipped`, `testimonial.link_issued`, `testimonial.submitted`, `testimonial.approved`, `testimonial.rejected`, `stripe.blocked_card_over_500`, `stripe.blocked_rail_over_500`, `stripe.rail_unverified`, `invoice.created`, `kyb.webmail_flagged`, `kyb.override`, `contract.drafted`, `contract.approval_requested`, `contract.approval_refused`, `contract.sent`, `contract.signed`, `contract.declined`, `contract.voided`, `contract.backed_up`, `contract.drive_synced`, `review.requested`, `review.approved`, `landing.completed`, `session.created`, `intake.emailed`, `asset.uploaded`, `clock.started`, `submit.blocked`, `jira.synced`, `jira.skipped`, `receipt.sent`, `receipt.skipped`, `landing.synced`, `landing.skipped`, `followup.failed`, `link.reissued`, `launched`, `stripe.ignored`, `cron`.
 
 ## Settings matrix
 
@@ -213,5 +238,9 @@ Incoming webhooks, one per channel (`SLACK_WEBHOOK_REVENUE`, `SLACK_WEBHOOK_SPRI
 | `BUSINESS_TIMEZONE`, `HOLIDAYS` | vars | clock | America/New_York, no holidays |
 | `TOKEN_TTL_DAYS`, `SECRETS_PURGE_DAYS` | vars | link life, key wipe | 14, 7 |
 | `STAGING_URL_TEMPLATE`, `CLOUDFLARE_HELP_URL` | vars | receipt and form copy | |
+| `MAINTENANCE_LINK_DAYS`, `MAINTENANCE_PURGE_DAYS` | vars | re-auth link life, re-entered key wipe | 7, 14 |
+| `TESTIMONIAL_DELAY_DAYS` | var | testimonial request delay | 3 |
+| `HUBSPOT_ACCESS_TOKEN` | secret | `POST /api/admin/invoices/from-deal` (same token as zp-landing; deals, contacts, companies read + deals write) | that route 503 |
+| `HUBSPOT_INVOICE_STAGE` | var | deal stage after the invoice | `contractsent` |
 
 Change vars in `wrangler.toml` (a deploy overwrites dashboard vars); add secrets in the dashboard.

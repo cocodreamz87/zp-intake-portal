@@ -149,3 +149,63 @@ export function calculateSprintSchedule(submittedAt: Date, tier: Tier, opts: Sch
     timeZone,
   };
 }
+
+export interface SprintProgress {
+  /** Business days in the sprint (5 / 10 / 20 when the clock started). */
+  businessDaysTotal: number;
+  /** Business days already finished. A day counts once its 9:00 AM boundary has passed. */
+  businessDaysElapsed: number;
+  businessDaysLeft: number;
+  /** 0 to 100, whole number. */
+  percent: number;
+  /** True once kickoff (9:00 AM on the first business day) has passed. */
+  started: boolean;
+  /** True once the guaranteed deadline has passed. */
+  deadlineReached: boolean;
+}
+
+/**
+ * How far along a running sprint is, in business days, for the client status page and the
+ * 50% / 100% emails. Counted from the saved kickoff and deadline, so it always agrees with
+ * the dates the client was promised (holidays listed later can't move them).
+ */
+export function sprintProgress(
+  clockStartedAt: string,
+  guaranteedDeadline: string,
+  now: Date,
+  opts: ScheduleOptions = {},
+): SprintProgress {
+  const timeZone = opts.timeZone ?? DEFAULT_TIMEZONE;
+  const holidays = new Set(opts.holidays ?? []);
+  const start = new Date(clockStartedAt);
+  const end = new Date(guaranteedDeadline);
+  const s = zonedParts(start, timeZone);
+  const e = zonedParts(end, timeZone);
+  const endDay = isoDate({ year: e.year, month: e.month, day: e.day });
+
+  let day: CivilDate = { year: s.year, month: s.month, day: s.day };
+  let total = 0;
+  let elapsed = 0;
+  // Walk the business days after kickoff up to the deadline day (at most a few weeks).
+  for (let guard = 0; guard < 400 && isoDate(day) < endDay; guard++) {
+    day = addDays(day, 1);
+    if (!isBusinessDay(day, holidays) && isoDate(day) !== endDay) continue;
+    total++;
+    if (zonedTimeToUtc(day, KICKOFF_HOUR, 0, timeZone).getTime() <= now.getTime()) elapsed++;
+  }
+  total = Math.max(total, 1);
+  elapsed = Math.min(elapsed, total);
+  return {
+    businessDaysTotal: total,
+    businessDaysElapsed: elapsed,
+    businessDaysLeft: total - elapsed,
+    percent: Math.round((elapsed / total) * 100),
+    started: now.getTime() >= start.getTime(),
+    deadlineReached: now.getTime() >= end.getTime(),
+  };
+}
+
+/** The business day on which the 50% milestone email goes out: day 3 of 5, 5 of 10, 10 of 20. */
+export function halfwayDay(total: number): number {
+  return Math.max(1, Math.ceil(total / 2));
+}

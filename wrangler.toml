@@ -50,6 +50,10 @@ JIRA_DOMAIN = ""                                 # e.g. "zinkpress.atlassian.net
 JIRA_PROJECT_KEY = ""                            # e.g. "ZP"
 JIRA_EPIC_TYPE = "Epic"
 JIRA_TASK_TYPE = "Task"
+MAINTENANCE_LINK_DAYS = "7"                      # how long a post-launch re-auth link works
+MAINTENANCE_PURGE_DAYS = "14"                    # wipe re-entered keys this many days after the client sends them (or 7 days after you mark the change done)
+TESTIMONIAL_DELAY_DAYS = "3"                     # ask for a testimonial this many days after launch (needs Resend and PORTAL_URL)
+HUBSPOT_INVOICE_STAGE = "contractsent"           # HubSpot deal stage id after POST /api/admin/invoices/from-deal
 
 # Secrets: add these in the Cloudflare dashboard (Settings > Variables and Secrets,
 # type "Secret"), never in this file. This repo is public.
@@ -62,6 +66,7 @@ JIRA_TASK_TYPE = "Task"
 #   GITHUB_TOKEN            fine-grained token with no permissions (optional, raises GitHub's rate limit)
 #   ZP_LANDING_ONBOARD_URL     https://zp-landing.peaceiam4now.workers.dev/api/onboard (optional; empty = skip the hand-off)
 #   ZP_LANDING_WEBHOOK_SECRET  the same value as WEBHOOK_SECRET on the zp-landing Worker
+#   HUBSPOT_ACCESS_TOKEN       same HubSpot private app token as zp-landing (optional; only for invoices made from a deal)
 # After a submit, the intake portal posts the client to zp-landing (Drive, Airtable, HubSpot,
 # welcome email, Slack). The hourly cron retries until zp-landing answers 2xx.
 #

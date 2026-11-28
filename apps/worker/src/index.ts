@@ -17,6 +17,7 @@ import {
   type Tier,
 } from "@zinkpress/shared";
 import { encryptJson, timingSafeEqual, TOKEN_RE } from "./crypto";
+import { TESTIMONIAL_QUOTE_MAX, TESTIMONIAL_QUOTE_MIN, type MaintenanceView, type TestimonialRequestView } from "@zinkpress/shared";
 import {
   addDaysIso,
   audit,
@@ -46,6 +47,12 @@ import {
   verifySlackSignature,
 } from "./services/slack-interactive";
 import { readPaidInvoice, verifyStripeSignature } from "./stripe";
+import { statusView } from "./status";
+import { createMaintenanceRequest, findMaintenanceByToken, maintenanceLive, type MaintenanceRow } from "./maintenance";
+import { approvedTestimonials, findTestimonialByToken, testimonialLink, type TestimonialRow } from "./testimonials";
+import { markDealInvoiced, readDealForInvoice } from "./hubspot";
+import { maintenanceLinkEmail } from "./email";
+import { BUSINESS_DAYS_BY_TIER } from "./schedule";
 import { BANK_ONLY_CENTS, createAndSendInvoice, isBankRail, isCardRail, resolvePaymentRails } from "./stripe-api";
 
 /** Outbound fetch. Tests swap this for a fake so nothing real is ever called. */
@@ -54,7 +61,7 @@ export function setOutboundFetch(f: typeof fetch) {
   outbound = f;
 }
 
-type AppEnv = { Bindings: Env; Variables: { session: SessionRow } };
+type AppEnv = { Bindings: Env; Variables: { session: SessionRow; maintenance: MaintenanceRow; testimonial: TestimonialRow } };
 const app = new Hono<AppEnv>();
 
 const PROJECT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
@@ -74,7 +81,8 @@ app.use("*", async (c, next) => {
   await next();
   c.header("X-Content-Type-Options", "nosniff");
   c.header("Referrer-Policy", "no-referrer");
-  c.header("Cache-Control", "no-store");
+  // Approved testimonials are public and the same for everyone, so zp-landing may cache them briefly.
+  c.header("Cache-Control", c.req.path === "/api/testimonials" && c.res.ok ? "public, max-age=300" : "no-store");
 });
 
 app.onError((err, c) => {
@@ -528,6 +536,12 @@ app.post("/api/stripe/webhook", async (c) => {
     },
     f,
   );
+  if (info.hubspotDealId) {
+    // Remember the scoping deal so zp-landing closes it instead of making a second one.
+    await env.DB.prepare("UPDATE onboarding_sessions SET hubspot_deal_id = ? WHERE project_id = ? AND hubspot_deal_id IS NULL")
+      .bind(info.hubspotDealId, info.projectId)
+      .run();
+  }
   if (result.status === "created" && pandadocConfigured(env)) {
     // Contract: populate the PandaDoc draft and ask #contract-approvals to approve it.
     waitUntil(
@@ -657,9 +671,14 @@ app.post("/api/admin/sessions/:projectId/launched", requireAdmin, async (c) => {
  * At $500+ the invoice only offers us_bank_account (ACH) and customer_balance (bank transfer / wire).
  */
 app.post("/api/admin/invoices", requireAdmin, async (c) => {
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  return issueInvoice(c, b, null);
+});
+
+/** Validates the invoice fields and makes the Stripe invoice. Shared by /api/admin/invoices and /from-deal. */
+async function issueInvoice(c: Context<AppEnv>, b: Record<string, unknown>, hubspotDealId: string | null) {
   const env = c.env;
   if (!env.STRIPE_SECRET_KEY) return c.json({ error: "Add the STRIPE_SECRET_KEY secret first." }, 503);
-  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const projectId = String(b.projectId ?? b.project_id ?? "").trim();
   const tier = String(b.tier ?? "").trim().toUpperCase() as Tier;
   const companyName = String(b.companyName ?? b.company_name ?? "").trim();
@@ -692,6 +711,7 @@ app.post("/api/admin/invoices", requireAdmin, async (c) => {
       daysUntilDue,
       milestone,
       send: b.send !== false,
+      hubspotDealId,
     },
     tracked(c, projectId),
   );
@@ -701,9 +721,10 @@ app.post("/api/admin/invoices", requireAdmin, async (c) => {
     amountCents,
     bankOnly: amountCents >= BANK_ONLY_CENTS,
     sent: out.sent,
+    hubspotDealId,
   });
-  return c.json({ ...out, bankOnly: amountCents >= BANK_ONLY_CENTS }, 201);
-});
+  return c.json({ ...out, projectId, tier, amountCents, bankOnly: amountCents >= BANK_ONLY_CENTS }, 201);
+}
 
 /** Let a Tier 2/3 approver use a gmail/yahoo/... address for this one project. */
 app.post("/api/admin/sessions/:projectId/kyb-override", requireAdmin, async (c) => {
@@ -1059,6 +1080,391 @@ app.post("/api/review/approve", requireSession, requireReview, async (c) => {
     ),
   );
   return c.json({ status: "LAUNCHED", approvedAt: at } as ApproveResult);
+});
+
+/* ------------------------------ Client status page ------------------------------ */
+
+/**
+ * Read-only status for the client's existing private link (the intake link, or the review link
+ * once staging is in review): stage, business-day progress and the deadline. Nothing internal.
+ */
+app.get("/api/status", requireSession, (c) => c.json(statusView(c.env, c.get("session"))));
+
+/* ------------------------------ Re-auth (maintenance) links ------------------------------ */
+
+function maintenanceView(env: Env, m: MaintenanceRow, row: SessionRow): MaintenanceView {
+  const live = maintenanceLive(m);
+  return {
+    projectId: m.project_id,
+    clientName: row.client_name,
+    agencyName: env.AGENCY_NAME,
+    agencyEmail: env.AGENCY_EMAIL,
+    requiredIntegrations: parseJson<string[]>(m.required_integrations_json, []),
+    note: m.note,
+    status: m.status === "OPEN" && !live ? "EXPIRED" : m.status,
+    expiresAt: m.token_expires_at,
+    submittedAt: m.submitted_at,
+  };
+}
+
+/**
+ * A launched client wants a change, but their keys were wiped 7 days after launch.
+ * This makes a private link (/maintenance?token=...) where they re-enter only the keys the change needs.
+ * Body: {"requiredIntegrations"?: ["STRIPE_SECRET_KEY"], "note"?: "Add a second booking calendar"}.
+ * requiredIntegrations defaults to the keys from the original intake.
+ */
+app.post("/api/admin/sessions/:projectId/maintenance", requireAdmin, async (c) => {
+  const env = c.env;
+  const row = await findSessionByProject(env.DB, c.req.param("projectId") ?? "");
+  if (!row) return c.json({ error: "not found" }, 404);
+  if (row.status !== "LAUNCHED") return c.json({ error: "Re-auth links are for launched projects. Before launch, the intake keys are still there." }, 409);
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const keys = Array.isArray(b.requiredIntegrations) ? cleanIntegrations(b.requiredIntegrations) : parseJson<string[]>(row.required_integrations_json, []);
+  if (keys.length === 0) return c.json({ error: "Name the keys the change needs in requiredIntegrations, e.g. [\"STRIPE_SECRET_KEY\"]." }, 400);
+  const note = String(b.note ?? "").trim().slice(0, 500) || null;
+  const { id, token, expiresAt } = await createMaintenanceRequest(env.DB, row, {
+    requiredIntegrations: keys,
+    note,
+    ttlDays: numberVar(env.MAINTENANCE_LINK_DAYS, 7),
+  });
+  const link = `${portalBase(env, c.req.url)}/maintenance?token=${token}`;
+  let emailed: string[] = [];
+  if (resendConfigured(env)) {
+    const mail = maintenanceLinkEmail(env, { clientName: row.spoc_name || row.client_name, projectId: row.project_id, link, expiresAt, note, keys });
+    const to = [row.spoc_email, row.client_email].filter((e, i, a): e is string => !!e && a.indexOf(e) === i);
+    for (const addr of to) await sendEmail(env, { to: addr, ...mail, idempotencyKey: `maintenance-${id}-${addr}` }, tracked(c, row.project_id));
+    emailed = to;
+  }
+  await audit(env.DB, row, "maintenance.requested", { requestId: id, keys, emailed }); // key names only
+  return c.json({ requestId: id, link, expiresAt, emailed, requiredIntegrations: keys }, 201);
+});
+
+/** Re-auth requests for one project (never the keys themselves). */
+app.get("/api/admin/sessions/:projectId/maintenance", requireAdmin, async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT id, status, required_integrations_json, note, token_expires_at, submitted_at, done_at, secrets_purge_after, secrets_purged_at,
+            encrypted_secrets_blob IS NOT NULL AS has_encrypted_secrets, created_at
+     FROM maintenance_requests WHERE project_id = ? ORDER BY created_at DESC LIMIT 20`,
+  )
+    .bind(c.req.param("projectId") ?? "")
+    .all();
+  return c.json({ requests: rows.results ?? [] });
+});
+
+/** The change is finished: keys are wiped SECRETS_PURGE_DAYS (7) from now, or sooner if already due. */
+app.post("/api/admin/maintenance/:id/done", requireAdmin, async (c) => {
+  const env = c.env;
+  const m = await env.DB.prepare("SELECT * FROM maintenance_requests WHERE id = ?").bind(c.req.param("id") ?? "").first<MaintenanceRow>();
+  if (!m) return c.json({ error: "not found" }, 404);
+  const soon = addDaysIso(numberVar(env.SECRETS_PURGE_DAYS, 7));
+  const purgeAfter = m.secrets_purge_after && m.secrets_purge_after < soon ? m.secrets_purge_after : soon;
+  const at = nowIso();
+  await env.DB.prepare(
+    "UPDATE maintenance_requests SET status = 'DONE', done_at = COALESCE(done_at, ?), secrets_purge_after = ?, updated_at = ? WHERE id = ?",
+  )
+    .bind(at, purgeAfter, at, m.id)
+    .run();
+  await audit(env.DB, { id: m.session_id, project_id: m.project_id }, "maintenance.done", { requestId: m.id, secretsPurgeAfter: purgeAfter });
+  return c.json({ status: "DONE", secretsPurgeAfter: purgeAfter });
+});
+
+const requireMaintenance = async (c: Context<AppEnv>, next: () => Promise<void>) => {
+  const token = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  const bad = () => c.json({ error: "This link isn't valid. Use the link from your email." }, 401);
+  if (!TOKEN_RE.test(token)) return bad();
+  const m = await findMaintenanceByToken(c.env.DB, token);
+  if (!m) return bad();
+  const row = await findSessionByProject(c.env.DB, m.project_id);
+  if (!row) return bad();
+  if (m.status === "EXPIRED" || (m.status === "OPEN" && !maintenanceLive(m))) {
+    return c.json({ error: `This link has expired. Email ${c.env.AGENCY_EMAIL} for a fresh one.`, code: "EXPIRED" }, 410);
+  }
+  c.set("maintenance", m);
+  c.set("session", row);
+  await next();
+};
+
+app.get("/api/maintenance", requireMaintenance, (c) => {
+    return c.json(maintenanceView(c.env, c.get("maintenance"), c.get("session")));
+});
+
+/** The client re-enters the keys. Encrypted at once (same key and project binding as the intake). */
+app.post("/api/maintenance/submit", requireMaintenance, async (c) => {
+  const env = c.env;
+    const m = c.get("maintenance");
+  const row = c.get("session");
+  if (m.status !== "OPEN") return c.json({ status: m.status, submittedAt: m.submitted_at });
+  if (!env.SECRETS_ENCRYPTION_KEY) {
+    await audit(env.DB, row, "submit.blocked", "SECRETS_ENCRYPTION_KEY is not set (maintenance)");
+    return c.json({ error: "We can't accept API keys right now. Please email us; nothing was saved." }, 503);
+  }
+  const b = (await c.req.json().catch(() => null)) as { secrets?: Record<string, unknown> } | null;
+  const required = parseJson<string[]>(m.required_integrations_json, []);
+  const fields: Record<string, string> = {};
+  const secrets: Record<string, string> = {};
+  for (const k of required) {
+    const v = typeof b?.secrets?.[k] === "string" ? String(b!.secrets![k]).trim() : "";
+    if (!v) fields[`secrets.${k}`] = "Paste this key.";
+    else if (v.length > 4000 || /\s/.test(v)) fields[`secrets.${k}`] = "This doesn't look like a key (no spaces, up to 4,000 characters).";
+    else secrets[k] = v;
+  }
+  if (Object.keys(fields).length) return c.json({ error: "Some answers need fixing.", fields }, 422);
+
+  const enc = await encryptJson(secrets, env.SECRETS_ENCRYPTION_KEY, row.project_id);
+  const at = nowIso();
+  const purgeAfter = addDaysIso(numberVar(env.MAINTENANCE_PURGE_DAYS, 14));
+  const result = await env.DB.prepare(
+    `UPDATE maintenance_requests SET status = 'SUBMITTED', encrypted_secrets_blob = ?, secrets_iv = ?, submitted_at = ?,
+       secrets_purge_after = ?, updated_at = ? WHERE id = ? AND status = 'OPEN'`,
+  )
+    .bind(enc.ciphertext, enc.iv, at, purgeAfter, at, m.id)
+    .run();
+  if ((result.meta?.changes ?? 0) === 0) return c.json({ status: "SUBMITTED", submittedAt: at });
+  await audit(env.DB, row, "maintenance.submitted", { requestId: m.id, keys: Object.keys(secrets), secretsPurgeAfter: purgeAfter });
+  waitUntil(
+    c,
+    sendSlackAlert(
+      env,
+      {
+        channel: "SPRINT_OPS",
+        title: `🔑 Keys re-entered for a change: ${row.project_id}`,
+        fields: [
+          { label: "Client", value: row.client_name },
+          { label: "Keys", value: Object.keys(secrets).join(", ") },
+          { label: "Wiped", value: formatInZone(purgeAfter, env.BUSINESS_TIMEZONE || DEFAULT_TIMEZONE) },
+        ],
+        note: m.note ? `Change: ${m.note}` : undefined,
+      },
+      outbound,
+    ),
+  );
+  return c.json({ status: "SUBMITTED", submittedAt: at, secretsPurgeAfter: purgeAfter });
+});
+
+/* ------------------------------ Testimonials ------------------------------ */
+
+const requireTestimonial = async (c: Context<AppEnv>, next: () => Promise<void>) => {
+  const token = (c.req.header("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  const bad = () => c.json({ error: "This link isn't valid. Use the link from your email." }, 401);
+  if (!TOKEN_RE.test(token)) return bad();
+  const t = await findTestimonialByToken(c.env.DB, token);
+  if (!t) return bad();
+  const row = await findSessionByProject(c.env.DB, t.project_id);
+  if (!row) return bad();
+  if (new Date(t.token_expires_at).getTime() <= Date.now() && (t.status === "REQUESTED" || t.status === "PENDING")) {
+    return c.json({ error: `This link has expired. Email ${c.env.AGENCY_EMAIL} if you'd still like to share a few words.`, code: "EXPIRED" }, 410);
+  }
+  c.set("testimonial", t);
+  c.set("session", row);
+  await next();
+};
+
+app.get("/api/testimonial", requireTestimonial, (c) => {
+    const t = c.get("testimonial");
+  const row = c.get("session");
+  const view: TestimonialRequestView = {
+    projectId: row.project_id,
+    clientName: row.client_name,
+    agencyName: c.env.AGENCY_NAME,
+    agencyEmail: c.env.AGENCY_EMAIL,
+    status: t.status,
+    suggestedName: row.spoc_name || row.contact_name || null,
+    businessDays: BUSINESS_DAYS_BY_TIER[row.tier],
+  };
+  return c.json(view);
+});
+
+/** The client's two sentences. Saved as PENDING: nothing is public until you approve it. */
+app.post("/api/testimonial", requireTestimonial, async (c) => {
+  const env = c.env;
+    const t = c.get("testimonial");
+  const row = c.get("session");
+  if (t.status === "APPROVED" || t.status === "REJECTED") return c.json({ status: t.status });
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const quote = String(b.quote ?? "").trim().replace(/\s+/g, " ");
+  const authorName = String(b.authorName ?? "").trim();
+  const authorRole = String(b.authorRole ?? "").trim().slice(0, 80) || null;
+  const company = String(b.company ?? row.client_name).trim().slice(0, 120) || null;
+  const linkRaw = String(b.linkUrl ?? "").trim();
+  const linkUrl = linkRaw ? httpsOrNull(linkRaw, 500) : null;
+  const fields: Record<string, string> = {};
+  if (quote.length < TESTIMONIAL_QUOTE_MIN || quote.length > TESTIMONIAL_QUOTE_MAX) {
+    fields.quote = `Two short sentences, ${TESTIMONIAL_QUOTE_MIN} to ${TESTIMONIAL_QUOTE_MAX} characters.`;
+  }
+  if (authorName.length < 2 || authorName.length > 80) fields.authorName = "Type your name as you'd like it shown.";
+  if (linkRaw && !linkUrl) fields.linkUrl = "Use a full https:// link, or leave this empty.";
+  if (b.consent !== true) fields.consent = "Tick the box so we can show your words.";
+  if (Object.keys(fields).length) return c.json({ error: "Some answers need fixing.", fields }, 422);
+
+  const at = nowIso();
+  await env.DB.prepare(
+    `UPDATE testimonials SET status = 'PENDING', quote = ?, author_name = ?, author_role = ?, company = ?, link_url = ?,
+       consent_at = ?, consent_ip = ?, submitted_at = ?, updated_at = ? WHERE id = ?`,
+  )
+    .bind(quote, authorName, authorRole, company, linkUrl, at, clientIp(c), at, at, t.id)
+    .run();
+  await audit(env.DB, row, "testimonial.submitted", { testimonialId: t.id, chars: quote.length });
+  waitUntil(
+    c,
+    sendSlackAlert(
+      env,
+      {
+        channel: "SPRINT_OPS",
+        title: `⭐ New testimonial to approve: ${row.project_id}`,
+        fields: [
+          { label: "Client", value: row.client_name },
+          { label: "From", value: `${authorName}${authorRole ? `, ${authorRole}` : ""}` },
+          { label: "Quote", value: quote },
+        ],
+        note: `Approve with POST /api/admin/testimonials/${t.id}/approve (add a "headline" if you like). Nothing shows on the site until then.`,
+      },
+      outbound,
+    ),
+  );
+  return c.json({ status: "PENDING" });
+});
+
+/** Get (or refresh) a project's testimonial link, e.g. to send it yourself while email isn't set up. */
+app.post("/api/admin/sessions/:projectId/testimonial-link", requireAdmin, async (c) => {
+  const row = await findSessionByProject(c.env.DB, c.req.param("projectId") ?? "");
+  if (!row) return c.json({ error: "not found" }, 404);
+  if (row.status !== "LAUNCHED") return c.json({ error: "Ask for a testimonial after launch." }, 409);
+  const link = await testimonialLink(c.env.DB, row, 30);
+  await audit(c.env.DB, row, "testimonial.link_issued", { testimonialId: link.id });
+  return c.json({ testimonialId: link.id, status: link.status, link: `${portalBase(c.env, c.req.url)}/testimonial?token=${link.token}`, expiresAt: link.expiresAt });
+});
+
+app.get("/api/admin/testimonials", requireAdmin, async (c) => {
+  const status = String(c.req.query("status") ?? "PENDING").toUpperCase();
+  if (!["REQUESTED", "PENDING", "APPROVED", "REJECTED"].includes(status)) return c.json({ error: "status: REQUESTED, PENDING, APPROVED or REJECTED" }, 400);
+  const rows = await c.env.DB.prepare(
+    `SELECT id, project_id, status, quote, author_name, author_role, company, link_url, headline, consent_at, submitted_at, reviewed_at
+     FROM testimonials WHERE status = ? ORDER BY COALESCE(submitted_at, created_at) DESC LIMIT 50`,
+  )
+    .bind(status)
+    .all();
+  return c.json({ testimonials: rows.results ?? [] });
+});
+
+/**
+ * Approve a quote so zp-landing shows it. Optional body: {"headline": "Replaced 6 hours a week of copy-paste",
+ * "quote": "<light edit>", "authorName", "authorRole", "company"}. Keep any edit true to what they wrote.
+ */
+app.post("/api/admin/testimonials/:id/approve", requireAdmin, async (c) => {
+  const env = c.env;
+  const t = await env.DB.prepare("SELECT * FROM testimonials WHERE id = ?").bind(c.req.param("id") ?? "").first<TestimonialRow>();
+  if (!t) return c.json({ error: "not found" }, 404);
+  if (t.status !== "PENDING" && t.status !== "APPROVED") return c.json({ error: "The client hasn't sent a quote yet." }, 409);
+  if (!t.consent_at) return c.json({ error: "No consent recorded for this quote." }, 409);
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const pick = (k: string, cur: string | null, max: number) => (typeof b[k] === "string" ? String(b[k]).trim().slice(0, max) || null : cur);
+  const quote = pick("quote", t.quote, TESTIMONIAL_QUOTE_MAX);
+  if (!quote || quote.length < TESTIMONIAL_QUOTE_MIN) return c.json({ error: "quote is too short" }, 400);
+  const at = nowIso();
+  await env.DB.prepare(
+    `UPDATE testimonials SET status = 'APPROVED', quote = ?, author_name = ?, author_role = ?, company = ?, headline = ?,
+       reviewed_at = ?, updated_at = ? WHERE id = ?`,
+  )
+    .bind(quote, pick("authorName", t.author_name, 80), pick("authorRole", t.author_role, 80), pick("company", t.company, 120), pick("headline", t.headline, 140), at, at, t.id)
+    .run();
+  await audit(env.DB, { id: t.session_id, project_id: t.project_id }, "testimonial.approved", { testimonialId: t.id, edited: typeof b.quote === "string" });
+  return c.json({ status: "APPROVED", reviewedAt: at });
+});
+
+app.post("/api/admin/testimonials/:id/reject", requireAdmin, async (c) => {
+  const env = c.env;
+  const t = await env.DB.prepare("SELECT * FROM testimonials WHERE id = ?").bind(c.req.param("id") ?? "").first<TestimonialRow>();
+  if (!t) return c.json({ error: "not found" }, 404);
+  const at = nowIso();
+  await env.DB.prepare("UPDATE testimonials SET status = 'REJECTED', reviewed_at = ?, updated_at = ? WHERE id = ?").bind(at, at, t.id).run();
+  await audit(env.DB, { id: t.session_id, project_id: t.project_id }, "testimonial.rejected", { testimonialId: t.id });
+  return c.json({ status: "REJECTED" });
+});
+
+/** Public: approved quotes only, for zp-landing's "shipped sprints" section. No emails, IPs or project ids. */
+app.get("/api/testimonials", async (c) => {
+  const list = await approvedTestimonials(c.env.DB);
+  return c.json({ testimonials: list });
+});
+
+/* ------------------------------ Invoice from a HubSpot scoping deal ------------------------------ */
+
+/** List prices in cents. Tier 3 starts at $10,000, so pass amountCents for anything bigger, or for a deposit. */
+const TIER_PRICE_CENTS: Record<Tier, number> = { TIER_1: 150_000, TIER_2: 550_000, TIER_3: 1_000_000 };
+
+/** Next free ZP-<year>-<NNN> id. Skips any id already used by an intake or another deal. */
+async function nextProjectId(db: D1Database, year: number): Promise<string> {
+  const prefix = `ZP-${year}-`;
+  const used = new Set<string>();
+  for (const sql of [
+    "SELECT project_id FROM deal_projects WHERE project_id LIKE ?",
+    "SELECT project_id FROM onboarding_sessions WHERE project_id LIKE ?",
+  ]) {
+    for (const r of (await db.prepare(sql).bind(`${prefix}%`).all<{ project_id: string }>()).results ?? []) used.add(r.project_id);
+  }
+  let n = 1;
+  for (const id of used) {
+    const m = /^ZP-\d{4}-(\d{1,6})$/.exec(id);
+    if (m) n = Math.max(n, Number(m[1]) + 1);
+  }
+  return `${prefix}${String(n).padStart(3, "0")}`;
+}
+
+/**
+ * The lead said yes on the scoping call: make the Stripe invoice from their HubSpot deal, with project_id,
+ * tier, company and contact filled in, then move the deal to HUBSPOT_INVOICE_STAGE.
+ * Body: {"dealId":"123","tier":"TIER_2","amountCents"?:550000,"milestone"?:"deposit","integrations"?:[],
+ *        "projectId"?:"ZP-2026-015","daysUntilDue"?:7,"send"?:false}
+ * Same deal again = same project id. send defaults to false here: you get a finalized invoice and its
+ * hosted link to check, then call again with "send": true to email it.
+ */
+app.post("/api/admin/invoices/from-deal", requireAdmin, async (c) => {
+  const env = c.env;
+  if (!env.HUBSPOT_ACCESS_TOKEN) return c.json({ error: "Add the HUBSPOT_ACCESS_TOKEN secret first (same token as zp-landing)." }, 503);
+  if (!env.STRIPE_SECRET_KEY) return c.json({ error: "Add the STRIPE_SECRET_KEY secret first." }, 503);
+  const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const dealId = String(b.dealId ?? b.deal_id ?? "").trim();
+  if (!/^\d{1,20}$/.test(dealId)) return c.json({ error: "dealId: the HubSpot deal's number (Record ID)" }, 400);
+
+  const f = tracked(c, null);
+  const deal = await readDealForInvoice(env, dealId, f).catch((err) => err as Error);
+  if (deal instanceof Error) return c.json({ error: deal.message }, 502);
+
+  const tier = String(b.tier ?? deal.tierInterest ?? "").trim().toUpperCase() as Tier;
+  if (!TIERS.includes(tier)) return c.json({ error: "tier must be TIER_1, TIER_2 or TIER_3 (the deal doesn't say)" }, 400);
+
+  const known = await env.DB.prepare("SELECT project_id, tier FROM deal_projects WHERE deal_id = ?").bind(dealId).first<{ project_id: string; tier: string }>();
+  let projectId = known?.project_id ?? String(b.projectId ?? "").trim();
+  if (!known) {
+    if (projectId && !PROJECT_ID_RE.test(projectId)) return c.json({ error: "projectId: letters, numbers, dot, dash, underscore" }, 400);
+    if (projectId && (await findSessionByProject(env.DB, projectId))) return c.json({ error: "That projectId is already used by an intake." }, 409);
+    if (!projectId) projectId = await nextProjectId(env.DB, new Date().getUTCFullYear());
+    await env.DB.prepare("INSERT INTO deal_projects (deal_id, project_id, tier) VALUES (?, ?, ?)").bind(dealId, projectId, tier).run();
+  }
+
+  const res = await issueInvoice(
+    c,
+    {
+      projectId,
+      tier,
+      companyName: deal.companyName,
+      contactName: deal.contactName,
+      contactEmail: deal.contactEmail,
+      integrations: b.integrations,
+      amountCents: b.amountCents ?? TIER_PRICE_CENTS[tier],
+      milestone: b.milestone ?? "deposit",
+      daysUntilDue: b.daysUntilDue ?? 7,
+      description: b.description,
+      send: b.send === true,
+    },
+    dealId,
+  );
+  if (res.status !== 201) return res;
+  const out = (await res.json()) as Record<string, unknown> & { hostedInvoiceUrl: string | null; amountCents: number };
+  await markDealInvoiced(env, { dealId, projectId, amountCents: out.amountCents, invoiceUrl: out.hostedInvoiceUrl }, f).catch((err) =>
+    console.error("HubSpot deal stage update failed:", err instanceof Error ? err.message : err),
+  );
+  return c.json({ ...out, dealId, contactEmail: deal.contactEmail, companyName: deal.companyName }, 201);
 });
 
 /** Run the housekeeping job now instead of waiting for the cron. */

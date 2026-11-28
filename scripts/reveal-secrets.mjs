@@ -5,6 +5,7 @@
  * Usage (from the repo's top folder):
  *   SECRETS_ENCRYPTION_KEY="the same value you saved in Cloudflare" node scripts/reveal-secrets.mjs ZP-2026-014
  * Add --local to read your local dev database instead of the live one.
+ * Add --maintenance to read the keys the client re-entered on their newest re-auth link instead.
  *
  * It asks wrangler for the encrypted blob, then decrypts it here. The key never leaves your machine.
  */
@@ -14,6 +15,7 @@ import { webcrypto as crypto } from "node:crypto";
 const args = process.argv.slice(2);
 const projectId = args.find((a) => !a.startsWith("--"));
 const where = args.includes("--local") ? "--local" : "--remote";
+const maintenance = args.includes("--maintenance");
 const keyB64 = process.env.SECRETS_ENCRYPTION_KEY;
 
 if (!projectId || !/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(projectId)) {
@@ -30,7 +32,9 @@ const out = execFileSync(
   [
     "wrangler", "d1", "execute", "zp-intake", where, "--json",
     "--command",
-    `SELECT encrypted_secrets_blob AS c, secrets_iv AS iv, secrets_purged_at AS purged FROM onboarding_sessions WHERE project_id = '${projectId}'`,
+    maintenance
+      ? `SELECT encrypted_secrets_blob AS c, secrets_iv AS iv, secrets_purged_at AS purged FROM maintenance_requests WHERE project_id = '${projectId}' AND submitted_at IS NOT NULL ORDER BY submitted_at DESC LIMIT 1`
+      : `SELECT encrypted_secrets_blob AS c, secrets_iv AS iv, secrets_purged_at AS purged FROM onboarding_sessions WHERE project_id = '${projectId}'`,
   ],
   { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
 );
